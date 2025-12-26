@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+
+# uv
+uv.lock
+.python-version
+
+# Data (generated)
+server/data/
+client/work/
+
+# Logs
+*.log
+nohup.out
+
+# PID files
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
