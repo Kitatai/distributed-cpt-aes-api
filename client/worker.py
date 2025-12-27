@@ -472,7 +472,7 @@ def run_experiment_for_task(
     return summary
 
 
-def worker_loop(client: APIClient, data_dir: Path, single: bool = False, dataset: str = None):
+def worker_loop(client: APIClient, data_dir: Path, single: bool = False, dataset: str = None, task_id: str = None):
     """
     Main worker loop.
 
@@ -481,6 +481,7 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False, dataset
         data_dir: Directory for local data
         single: If True, process only one task then exit
         dataset: Filter tasks by dataset ("asap" or "toefl11"). If None, accepts any task.
+        task_id: Request a specific task by ID. Overrides dataset filter.
     """
     global _state
 
@@ -499,9 +500,14 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False, dataset
     asap_path = data_dir / "asap" / "training_set_rel3.tsv"
     toefl11_dir = data_dir / "toefl11" / "ETS_Corpus_of_Non-Native_Written_English"
 
+    # Track if we've used the specific task_id (only use once)
+    requested_task_id = task_id
+
     while not _state.shutdown_requested:
-        # Get next task (optionally filtered by dataset)
-        task = client.get_next_task(dataset=dataset)
+        # Get next task (optionally filtered by dataset or specific task_id)
+        task = client.get_next_task(dataset=dataset, task_id=requested_task_id)
+        # Clear specific task_id after first request (subsequent iterations use dataset filter)
+        requested_task_id = None
 
         if not task:
             logger.info("No pending tasks available")
@@ -627,6 +633,12 @@ def main():
         default=None,
         help="Filter tasks by dataset (asap or toefl11). If not specified, accepts any task.",
     )
+    parser.add_argument(
+        "--task-id",
+        type=str,
+        default=None,
+        help="Request a specific task by ID. Overrides --dataset filter.",
+    )
 
     args = parser.parse_args()
 
@@ -648,11 +660,13 @@ def main():
     logger.info(f"Worker ID: {worker_id}")
     logger.info(f"Server: {args.server}")
     logger.info(f"Data directory: {data_dir}")
-    if args.dataset:
+    if args.task_id:
+        logger.info(f"Specific task: {args.task_id}")
+    elif args.dataset:
         logger.info(f"Dataset filter: {args.dataset}")
 
     # Run worker loop
-    worker_loop(client, data_dir, single=args.single, dataset=args.dataset)
+    worker_loop(client, data_dir, single=args.single, dataset=args.dataset, task_id=args.task_id)
 
 
 if __name__ == "__main__":

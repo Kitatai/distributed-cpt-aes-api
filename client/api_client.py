@@ -47,15 +47,18 @@ class APIClient:
     # Task Management
     # ============================================
 
-    def get_next_task(self, dataset: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_next_task(self, dataset: Optional[str] = None, task_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Get next available task.
 
         Args:
             dataset: Filter by dataset ("asap" or "toefl11"). If None, returns any pending task.
+            task_id: Request a specific task by ID. If specified, overrides dataset filter.
         """
         try:
             params = {"worker_id": self.worker_id}
-            if dataset is not None:
+            if task_id is not None:
+                params["task_id"] = task_id
+            elif dataset is not None:
                 params["dataset"] = dataset
             resp = requests.get(
                 self._url("/tasks/next"),

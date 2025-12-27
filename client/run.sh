@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run worker
-# Usage: bash run.sh --server http://SERVER_IP:8000 [--dataset toefl11|asap] [--single]
+# Usage: bash run.sh --server http://SERVER_IP:8000 [--dataset toefl11|asap] [--task-id TASK_ID] [--single]
 
 set -e
 

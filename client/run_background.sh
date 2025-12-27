@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run worker in background (survives SSH disconnect)
-# Usage: bash run_background.sh --server http://SERVER_IP:8000 [--dataset toefl11|asap]
+# Usage: bash run_background.sh --server http://SERVER_IP:8000 [--dataset toefl11|asap] [--task-id TASK_ID]
 
 set -e
 
