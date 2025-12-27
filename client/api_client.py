@@ -47,12 +47,19 @@ class APIClient:
     # Task Management
     # ============================================
 
-    def get_next_task(self) -> Optional[Dict[str, Any]]:
-        """Get next available task."""
+    def get_next_task(self, dataset: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Get next available task.
+
+        Args:
+            dataset: Filter by dataset ("asap" or "toefl11"). If None, returns any pending task.
+        """
         try:
+            params = {"worker_id": self.worker_id}
+            if dataset is not None:
+                params["dataset"] = dataset
             resp = requests.get(
                 self._url("/tasks/next"),
-                params={"worker_id": self.worker_id},
+                params=params,
                 timeout=30,
             )
             resp.raise_for_status()

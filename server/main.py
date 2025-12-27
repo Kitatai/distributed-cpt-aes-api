@@ -249,15 +249,26 @@ async def init_tasks(
 
 
 @app.get("/tasks/next", response_model=TaskStartResponse)
-async def get_next_task(worker_id: str = Query(..., description="Worker identifier")):
+async def get_next_task(
+    worker_id: str = Query(..., description="Worker identifier"),
+    dataset: str = Query(None, description="Filter by dataset (asap or toefl11). If None, returns any pending task.")
+):
     """Get next available task for a worker."""
     lock = FileLock(str(TASKS_DIR / ".assign.lock"))
 
     with lock:
         tasks = get_all_tasks()
 
-        # Find first pending task
+        # Find first pending task (optionally filtered by dataset)
         for task in tasks:
+            # Filter by dataset if specified
+            if dataset is not None:
+                is_toefl = task.task_id.startswith("toefl11_")
+                if dataset == "toefl11" and not is_toefl:
+                    continue
+                if dataset == "asap" and is_toefl:
+                    continue
+
             if task.status == TaskStatus.PENDING:
                 # Assign to worker
                 task.status = TaskStatus.RUNNING

@@ -472,7 +472,7 @@ def run_experiment_for_task(
     return summary
 
 
-def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
+def worker_loop(client: APIClient, data_dir: Path, single: bool = False, dataset: str = None):
     """
     Main worker loop.
 
@@ -480,6 +480,7 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
         client: API client
         data_dir: Directory for local data
         single: If True, process only one task then exit
+        dataset: Filter tasks by dataset ("asap" or "toefl11"). If None, accepts any task.
     """
     global _state
 
@@ -499,8 +500,8 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
     toefl11_dir = data_dir / "toefl11" / "ETS_Corpus_of_Non-Native_Written_English"
 
     while not _state.shutdown_requested:
-        # Get next task
-        task = client.get_next_task()
+        # Get next task (optionally filtered by dataset)
+        task = client.get_next_task(dataset=dataset)
 
         if not task:
             logger.info("No pending tasks available")
@@ -619,6 +620,13 @@ def main():
         default=None,
         help="Worker ID (default: auto-generated from hostname)",
     )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        choices=["asap", "toefl11"],
+        default=None,
+        help="Filter tasks by dataset (asap or toefl11). If not specified, accepts any task.",
+    )
 
     args = parser.parse_args()
 
@@ -640,9 +648,11 @@ def main():
     logger.info(f"Worker ID: {worker_id}")
     logger.info(f"Server: {args.server}")
     logger.info(f"Data directory: {data_dir}")
+    if args.dataset:
+        logger.info(f"Dataset filter: {args.dataset}")
 
     # Run worker loop
-    worker_loop(client, data_dir, single=args.single)
+    worker_loop(client, data_dir, single=args.single, dataset=args.dataset)
 
 
 if __name__ == "__main__":
