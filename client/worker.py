@@ -9,11 +9,13 @@ and uploads results back to the server.
 import os
 import sys
 import time
+import signal
 import socket
 import logging
 import argparse
 import tempfile
 import shutil
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -29,6 +31,34 @@ CLIENT_DIR = Path(__file__).parent
 sys.path.insert(0, str(CLIENT_DIR / "src"))
 
 from api_client import APIClient
+
+
+# Global state for graceful shutdown
+class WorkerState:
+    """Global state for worker shutdown handling."""
+    shutdown_requested = False
+    current_task_id = None
+    client = None
+    lock = threading.Lock()
+
+
+_state = WorkerState()
+
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals (SIGINT, SIGTERM)."""
+    sig_name = signal.Signals(signum).name
+    logger.info(f"\nReceived {sig_name}, initiating graceful shutdown...")
+
+    with _state.lock:
+        _state.shutdown_requested = True
+
+        if _state.current_task_id and _state.client:
+            logger.info(f"Releasing current task: {_state.current_task_id}")
+            try:
+                _state.client.release_task(_state.current_task_id)
+            except Exception as e:
+                logger.error(f"Failed to release task: {e}")
 
 
 def get_worker_id() -> str:
@@ -434,12 +464,18 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
         data_dir: Directory for local data
         single: If True, process only one task then exit
     """
+    global _state
+
+    # Store client in global state for signal handler
+    _state.client = client
+
     # Check server health
     if not client.health_check():
         logger.error("Server is not healthy!")
         return
 
     logger.info(f"Worker {client.worker_id} starting...")
+    logger.info("Press Ctrl+C to stop gracefully")
 
     # Download ASAP data if not present
     asap_path = data_dir / "asap" / "training_set_rel3.tsv"
@@ -449,7 +485,7 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
             logger.error("Failed to download ASAP data!")
             return
 
-    while True:
+    while not _state.shutdown_requested:
         # Get next task
         task = client.get_next_task()
 
@@ -458,17 +494,27 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
             if single:
                 break
             logger.info("Waiting 60 seconds before checking again...")
-            time.sleep(60)
+            # Check for shutdown during wait
+            for _ in range(60):
+                if _state.shutdown_requested:
+                    break
+                time.sleep(1)
             continue
 
         task_id = task['task_id']
         logger.info(f"Got task: {task_id}")
+
+        # Track current task for graceful shutdown
+        with _state.lock:
+            _state.current_task_id = task_id
 
         # Get task config
         config = client.get_task_config(task_id)
         if not config:
             logger.error(f"Failed to get config for {task_id}")
             client.fail_task(task_id, "Failed to get task configuration")
+            with _state.lock:
+                _state.current_task_id = None
             continue
 
         # Create work directory
@@ -485,19 +531,29 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
                 work_dir=work_dir,
             )
 
-            # Mark task as completed
-            client.complete_task(task_id, summary)
-            logger.info(f"Task {task_id} completed successfully")
+            # Mark task as completed (only if not shutdown)
+            if not _state.shutdown_requested:
+                client.complete_task(task_id, summary)
+                logger.info(f"Task {task_id} completed successfully")
 
         except Exception as e:
-            logger.exception(f"Task {task_id} failed")
-            client.fail_task(task_id, str(e))
+            if _state.shutdown_requested:
+                logger.info(f"Task {task_id} interrupted by shutdown")
+                # Task already released by signal handler
+            else:
+                logger.exception(f"Task {task_id} failed")
+                client.fail_task(task_id, str(e))
 
         finally:
+            # Clear current task
+            with _state.lock:
+                _state.current_task_id = None
             cleanup_gpu_memory()
 
-        if single:
+        if single or _state.shutdown_requested:
             break
+
+    logger.info("Worker stopped")
 
 
 def main():
@@ -527,6 +583,10 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     # Setup data directory
     if args.data_dir:

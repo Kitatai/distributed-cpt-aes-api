@@ -437,6 +437,46 @@ async def reset_task(task_id: str):
     return {"message": f"Task {task_id} reset"}
 
 
+class TaskReleaseRequest(BaseModel):
+    worker_id: str
+
+
+@app.post("/tasks/{task_id}/release")
+async def release_task(task_id: str, request: TaskReleaseRequest):
+    """
+    Release a task back to pending status (for graceful worker shutdown).
+
+    Unlike reset, this preserves progress and only releases if the
+    requesting worker owns the task.
+    """
+    task = load_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    # Only allow release if worker owns the task
+    if task.worker_id != request.worker_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Task {task_id} is not owned by worker {request.worker_id}"
+        )
+
+    if task.status != TaskStatus.RUNNING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task {task_id} is not running (status: {task.status})"
+        )
+
+    # Release task back to pending, preserving progress
+    task.status = TaskStatus.PENDING
+    task.worker_id = None
+    task.started_at = None
+    # Keep last_completed_epoch for resume capability
+    save_task(task)
+
+    logger.info(f"Task {task_id} released by worker {request.worker_id}")
+    return {"message": f"Task {task_id} released"}
+
+
 # ============================================
 # Checkpoint Endpoints
 # ============================================

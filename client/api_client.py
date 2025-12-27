@@ -118,6 +118,25 @@ class APIClient:
             logger.error(f"Failed to mark task as failed: {e}")
             return False
 
+    def release_task(self, task_id: str) -> bool:
+        """
+        Release task back to pending status (for graceful shutdown).
+
+        This allows another worker to pick up the task while preserving progress.
+        """
+        try:
+            resp = requests.post(
+                self._url(f"/tasks/{task_id}/release"),
+                json={"worker_id": self.worker_id},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            logger.info(f"Released task: {task_id}")
+            return True
+        except requests.RequestException as e:
+            logger.error(f"Failed to release task: {e}")
+            return False
+
     def get_status(self) -> Optional[Dict[str, Any]]:
         """Get overall status."""
         try:
