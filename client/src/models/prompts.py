@@ -14,45 +14,56 @@ from dataclasses import dataclass
 _PROMPTS_BASE_DIR = Path(__file__).parent.parent.parent / "exp" / "llm_prompts"
 
 
-def _load_prompt_text(prompt_id: int) -> str:
+def _load_prompt_text(prompt_id: int, dataset: str = "asap") -> str:
     """Load essay prompt text from file."""
-    prompt_file = _PROMPTS_BASE_DIR / "essay_prompts" / f"prompt_{prompt_id}.md"
+    if dataset == "toefl11":
+        prompt_file = _PROMPTS_BASE_DIR / "toefl11_essay_prompts" / f"prompt_{prompt_id}.md"
+    else:
+        prompt_file = _PROMPTS_BASE_DIR / "essay_prompts" / f"prompt_{prompt_id}.md"
     if prompt_file.exists():
         return prompt_file.read_text(encoding="utf-8").strip()
     return ""
 
 
-def _load_rubric_text(prompt_id: int) -> str:
+def _load_rubric_text(prompt_id: int, dataset: str = "asap") -> str:
     """Load rubric text from file."""
-    rubric_file = _PROMPTS_BASE_DIR / "overall" / f"Overall_{prompt_id}.md"
+    if dataset == "toefl11":
+        # TOEFL11 uses a shared rubric for all prompts
+        rubric_file = _PROMPTS_BASE_DIR / "toefl11_overall" / "Overall.md"
+    else:
+        rubric_file = _PROMPTS_BASE_DIR / "overall" / f"Overall_{prompt_id}.md"
     if rubric_file.exists():
         return rubric_file.read_text(encoding="utf-8").strip()
     return ""
 
 
-def _load_all_prompts() -> Dict[int, str]:
+def _load_all_prompts(dataset: str = "asap") -> Dict[int, str]:
     """Load all essay prompt texts from files."""
     prompts = {}
     for prompt_id in range(1, 9):
-        text = _load_prompt_text(prompt_id)
+        text = _load_prompt_text(prompt_id, dataset)
         if text:
             prompts[prompt_id] = text
     return prompts
 
 
-def _load_all_rubrics() -> Dict[int, str]:
+def _load_all_rubrics(dataset: str = "asap") -> Dict[int, str]:
     """Load all rubric texts from files."""
     rubrics = {}
     for prompt_id in range(1, 9):
-        text = _load_rubric_text(prompt_id)
+        text = _load_rubric_text(prompt_id, dataset)
         if text:
             rubrics[prompt_id] = text
     return rubrics
 
 
-# Load prompts and rubrics from files
-ASAP_PROMPT_TEXTS: Dict[int, str] = _load_all_prompts()
-ASAP_RUBRICS: Dict[int, str] = _load_all_rubrics()
+# Load ASAP prompts and rubrics from files
+ASAP_PROMPT_TEXTS: Dict[int, str] = _load_all_prompts("asap")
+ASAP_RUBRICS: Dict[int, str] = _load_all_rubrics("asap")
+
+# Load TOEFL11 prompts and rubrics from files
+TOEFL11_PROMPT_TEXTS: Dict[int, str] = _load_all_prompts("toefl11")
+TOEFL11_RUBRICS: Dict[int, str] = _load_all_rubrics("toefl11")
 
 
 # Generic holistic rubric (used as fallback when prompt-specific rubric is not available)
@@ -143,6 +154,48 @@ An integer score in [{self.y_min}, {self.y_max}] (inclusive).
 {self.output_prefix}<INTEGER>"""
         return message
 
+    def build_user_message_prefix(self) -> str:
+        """
+        Build the prefix part of user message (before essay).
+
+        This is the cacheable part that remains constant for all essays
+        with the same prompt_id.
+
+        Returns:
+            User message prefix ending with "[Essay]\n"
+        """
+        return f"""[Task]
+You will score a student essay for the following writing prompt.
+
+[Writing Prompt]
+{self.prompt_text}
+
+[Scoring Rubric]
+{self.rubric_text}
+
+[Allowed Score Range]
+An integer score in [{self.y_min}, {self.y_max}] (inclusive).
+
+[Essay]
+"""
+
+    def build_user_message_suffix(self, essay_text: str) -> str:
+        """
+        Build the suffix part of user message (essay and output format).
+
+        This is the variable part that changes for each essay.
+
+        Args:
+            essay_text: The essay to be scored
+
+        Returns:
+            User message suffix with essay and output format
+        """
+        return f"""{essay_text}
+
+[Output Format]
+{self.output_prefix}<INTEGER>"""
+
     def build_assistant_prefill(self) -> str:
         """Build the assistant prefill (continuation point)."""
         return self.output_prefix
@@ -183,6 +236,38 @@ An integer score in [{self.y_min}, {self.y_max}] (inclusive).
             messages.append({"role": "assistant", "content": prompt.assistant_prefill})
         return messages
 
+    def to_prefix_messages(self) -> List[Dict[str, str]]:
+        """
+        Build messages for prefix caching (everything before essay content).
+
+        The prefix includes system message and user message up to "[Essay]\n".
+        This is constant for all essays with the same prompt_id.
+
+        Returns:
+            List of message dictionaries for the cacheable prefix
+        """
+        return [
+            {"role": "system", "content": self.build_system_message()},
+            {"role": "user", "content": self.build_user_message_prefix()},
+        ]
+
+    def to_suffix_text(self, essay_text: str) -> str:
+        """
+        Build the suffix text (essay content + output format + assistant prefill).
+
+        This is the variable part that changes for each essay.
+        Note: This returns raw text, not messages, because it continues
+        the user message from the prefix.
+
+        Args:
+            essay_text: The essay to be scored
+
+        Returns:
+            Suffix text to append after the cached prefix
+        """
+        # Essay content + output format section + assistant turn with prefill
+        return self.build_user_message_suffix(essay_text)
+
 
 def create_prompt_builder(
     prompt_id: int,
@@ -190,26 +275,35 @@ def create_prompt_builder(
     y_max: int,
     use_generic_rubric: bool = False,
     output_prefix: str = "The score of this essay:",
+    dataset: str = "asap",
 ) -> ScoringPromptBuilder:
     """
-    Create a prompt builder for a specific ASAP prompt.
+    Create a prompt builder for a specific prompt.
 
     Args:
-        prompt_id: ASAP prompt ID (1-8)
+        prompt_id: Prompt ID (1-8)
         y_min: Minimum score
         y_max: Maximum score
         use_generic_rubric: Whether to use generic rubric (True) or prompt-specific (False)
         output_prefix: Output prefix for score
+        dataset: Dataset type ("asap" or "toefl11")
 
     Returns:
         ScoringPromptBuilder configured for the prompt
     """
-    prompt_text = ASAP_PROMPT_TEXTS.get(prompt_id, "")
+    if dataset == "toefl11":
+        prompt_texts = TOEFL11_PROMPT_TEXTS
+        rubrics = TOEFL11_RUBRICS
+    else:
+        prompt_texts = ASAP_PROMPT_TEXTS
+        rubrics = ASAP_RUBRICS
 
-    if use_generic_rubric or not ASAP_RUBRICS.get(prompt_id):
+    prompt_text = prompt_texts.get(prompt_id, "")
+
+    if use_generic_rubric or not rubrics.get(prompt_id):
         rubric_text = GENERIC_HOLISTIC_RUBRIC
     else:
-        rubric_text = ASAP_RUBRICS[prompt_id]
+        rubric_text = rubrics[prompt_id]
 
     return ScoringPromptBuilder(
         y_min=y_min,

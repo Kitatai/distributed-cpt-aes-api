@@ -24,6 +24,18 @@ ASAP_SCORE_RANGES: Dict[int, Tuple[int, int]] = {
     8: (0, 60),
 }
 
+# TOEFL11 score ranges (low=0, medium=1, high=2 for all prompts)
+TOEFL11_SCORE_RANGES: Dict[int, Tuple[int, int]] = {
+    1: (0, 2),
+    2: (0, 2),
+    3: (0, 2),
+    4: (0, 2),
+    5: (0, 2),
+    6: (0, 2),
+    7: (0, 2),
+    8: (0, 2),
+}
+
 # Supported models
 SUPPORTED_MODELS = [
     "meta-llama/Meta-Llama-3.1-8B-Instruct",
@@ -36,7 +48,7 @@ SUPPORTED_MODELS = [
 @dataclass
 class DataConfig:
     """Configuration for dataset handling."""
-    dataset: str = "asap"
+    dataset: str = "asap"  # "asap" or "toefl11"
     prompt_id: int = 1
     data_path: str = "data/asap/training_set_rel3.tsv"
     essay_column: str = "essay"
@@ -46,7 +58,9 @@ class DataConfig:
 
     @property
     def score_range(self) -> Tuple[int, int]:
-        """Get score range for current prompt."""
+        """Get score range for current prompt based on dataset."""
+        if self.dataset == "toefl11":
+            return TOEFL11_SCORE_RANGES.get(self.prompt_id, (0, 2))
         return ASAP_SCORE_RANGES.get(self.prompt_id, (0, 10))
 
     @property

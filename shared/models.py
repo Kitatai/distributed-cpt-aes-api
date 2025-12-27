@@ -22,6 +22,7 @@ class TaskInfo(BaseModel):
     model_name: str
     model_short_name: str
     status: TaskStatus
+    dataset: str = "asap"  # "asap" or "toefl11"
     worker_id: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -84,6 +85,7 @@ class ExperimentConfig(BaseModel):
     task_id: str
     prompt_id: int
     model_name: str
+    dataset: str = "asap"  # "asap" or "toefl11"
     max_epochs: int = 30
     lr: float = 1e-6
     lora_r: int = 4

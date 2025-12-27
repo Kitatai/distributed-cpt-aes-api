@@ -365,3 +365,90 @@ class APIClient:
             return resp.json().get("exists", False)
         except requests.RequestException:
             return False
+
+    def download_toefl11_data(self, target_dir: Path) -> bool:
+        """
+        Download TOEFL11 dataset from server.
+
+        Downloads index.csv and all essay files from the server.
+
+        Args:
+            target_dir: Directory to save the TOEFL11 data (ETS_Corpus_of_Non-Native_Written_English)
+
+        Returns:
+            True if successful
+        """
+        import pandas as pd
+
+        try:
+            # Create directory structure
+            text_dir = target_dir / "data" / "text"
+            responses_dir = text_dir / "responses" / "original"
+            prompts_dir = text_dir / "prompts"
+
+            responses_dir.mkdir(parents=True, exist_ok=True)
+            prompts_dir.mkdir(parents=True, exist_ok=True)
+
+            # Download index.csv
+            logger.info("Downloading TOEFL11 index.csv...")
+            resp = requests.get(
+                self._url("/data/toefl11/index"),
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+
+            index_path = text_dir / "index.csv"
+            with open(index_path, 'wb') as f:
+                f.write(resp.content)
+
+            # Parse index to get list of essay files
+            df = pd.read_csv(index_path)
+            filenames = df['Filename'].tolist()
+
+            # Download all essay files
+            logger.info(f"Downloading {len(filenames)} TOEFL11 essays...")
+            for i, filename in enumerate(filenames):
+                if i % 500 == 0:
+                    logger.info(f"  Progress: {i}/{len(filenames)}")
+
+                resp = requests.get(
+                    self._url(f"/data/toefl11/essay/{filename}"),
+                    timeout=60,
+                )
+                resp.raise_for_status()
+
+                essay_path = responses_dir / filename
+                with open(essay_path, 'wb') as f:
+                    f.write(resp.content)
+
+            # Download prompts P1-P8
+            logger.info("Downloading TOEFL11 prompts...")
+            for prompt_id in range(1, 9):
+                resp = requests.get(
+                    self._url(f"/data/toefl11/prompt/{prompt_id}"),
+                    timeout=30,
+                )
+                resp.raise_for_status()
+
+                prompt_path = prompts_dir / f"P{prompt_id}.txt"
+                with open(prompt_path, 'wb') as f:
+                    f.write(resp.content)
+
+            logger.info(f"Downloaded TOEFL11 data to {target_dir}")
+            return True
+
+        except requests.RequestException as e:
+            logger.error(f"Failed to download TOEFL11 data: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error processing TOEFL11 data: {e}")
+            return False
+
+    def check_toefl11_data(self) -> Dict[str, bool]:
+        """Check if TOEFL11 data exists on server."""
+        try:
+            resp = requests.get(self._url("/data/toefl11/exists"), timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException:
+            return {"index_exists": False, "rubric_exists": False, "prompts_exist": False}

@@ -31,6 +31,7 @@ CLIENT_DIR = Path(__file__).parent
 sys.path.insert(0, str(CLIENT_DIR / "src"))
 
 from api_client import APIClient
+from data.toefl11_loader import TOEFL11DataLoader, load_toefl11_for_experiment
 
 
 # Global state for graceful shutdown
@@ -94,7 +95,7 @@ def run_experiment_for_task(
         client: API client
         task_id: Task identifier
         config: Experiment configuration
-        data_path: Path to ASAP data
+        data_path: Path to data (ASAP tsv or TOEFL11 directory)
         work_dir: Working directory for this task
 
     Returns:
@@ -104,7 +105,7 @@ def run_experiment_for_task(
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel, LoraConfig, get_peft_model, TaskType
 
-    from config import ExperimentConfig, create_default_config, ASAP_SCORE_RANGES
+    from config import ExperimentConfig, create_default_config, ASAP_SCORE_RANGES, TOEFL11_SCORE_RANGES
     from data.data_loader import load_asap_for_experiment
     from models.scorer import ZeroShotScorer
     from models.logit_extractor import create_logit_extractor
@@ -121,13 +122,16 @@ def run_experiment_for_task(
     for d in [checkpoint_dir, output_dir, splits_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    # Create experiment config
+    # Detect dataset type
+    dataset = config.get("dataset", "asap")
     prompt_id = config["prompt_id"]
     model_name = config["model_name"]
     max_epochs = config.get("max_epochs", 30)
     seed = config.get("seed", 42)
 
+    # Create experiment config
     exp_config = create_default_config(prompt_id, model_name)
+    exp_config.data.dataset = dataset  # Set dataset type
     exp_config.data.data_path = str(data_path)
     exp_config.cpt.max_epochs = max_epochs
     exp_config.seed = seed
@@ -140,17 +144,28 @@ def run_experiment_for_task(
 
     set_seed(seed)
 
-    # Load data
-    logger.info(f"Loading ASAP data for prompt {prompt_id}...")
-    dev_split, test_split, full_split, _ = load_asap_for_experiment(
-        data_path=str(data_path),
-        prompt_id=prompt_id,
-        dev_M=config.get("dev_M", 5),
-        seed=config.get("dev_seed", 42),
-        splits_dir=str(splits_dir),
-    )
+    # Load data based on dataset type
+    if dataset == "toefl11":
+        logger.info(f"Loading TOEFL11 data for prompt {prompt_id}...")
+        dev_split, test_split, full_split, _ = load_toefl11_for_experiment(
+            data_dir=str(data_path),
+            prompt_id=prompt_id,
+            dev_M=config.get("dev_M", 5),
+            seed=config.get("dev_seed", 42),
+            splits_dir=str(splits_dir),
+        )
+        y_min, y_max = TOEFL11_SCORE_RANGES[prompt_id]
+    else:
+        logger.info(f"Loading ASAP data for prompt {prompt_id}...")
+        dev_split, test_split, full_split, _ = load_asap_for_experiment(
+            data_path=str(data_path),
+            prompt_id=prompt_id,
+            dev_M=config.get("dev_M", 5),
+            seed=config.get("dev_seed", 42),
+            splits_dir=str(splits_dir),
+        )
+        y_min, y_max = ASAP_SCORE_RANGES[prompt_id]
 
-    y_min, y_max = exp_config.data.y_min, exp_config.data.y_max
     logger.info(f"Loaded {len(full_split)} essays, score range: [{y_min}, {y_max}]")
 
     # Check for existing progress on server
@@ -195,6 +210,7 @@ def run_experiment_for_task(
         prompt_id=prompt_id,
         device="cuda",
         dtype="bfloat16",
+        dataset=dataset,  # Pass dataset type for correct prompt/rubric
     )
     scorer.set_model(model, tokenizer)
 
@@ -430,6 +446,7 @@ def run_experiment_for_task(
     # Create summary
     summary = {
         'task_id': task_id,
+        'dataset': dataset,
         'prompt_id': prompt_id,
         'model_name': model_name,
         'score_range': [y_min, y_max],
@@ -477,13 +494,9 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
     logger.info(f"Worker {client.worker_id} starting...")
     logger.info("Press Ctrl+C to stop gracefully")
 
-    # Download ASAP data if not present
+    # Setup data paths
     asap_path = data_dir / "asap" / "training_set_rel3.tsv"
-    if not asap_path.exists():
-        logger.info("Downloading ASAP data from server...")
-        if not client.download_asap_data(asap_path):
-            logger.error("Failed to download ASAP data!")
-            return
+    toefl11_dir = data_dir / "toefl11" / "ETS_Corpus_of_Non-Native_Written_English"
 
     while not _state.shutdown_requested:
         # Get next task
@@ -517,6 +530,31 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
                 _state.current_task_id = None
             continue
 
+        # Determine dataset and prepare data
+        dataset = config.get("dataset", "asap")
+        if dataset == "toefl11":
+            # Check if TOEFL11 data exists
+            if not (toefl11_dir / "data" / "text" / "index.csv").exists():
+                logger.info("Downloading TOEFL11 data from server...")
+                if not client.download_toefl11_data(toefl11_dir):
+                    logger.error("Failed to download TOEFL11 data!")
+                    client.fail_task(task_id, "Failed to download TOEFL11 data")
+                    with _state.lock:
+                        _state.current_task_id = None
+                    continue
+            data_path = toefl11_dir
+        else:
+            # ASAP dataset
+            if not asap_path.exists():
+                logger.info("Downloading ASAP data from server...")
+                if not client.download_asap_data(asap_path):
+                    logger.error("Failed to download ASAP data!")
+                    client.fail_task(task_id, "Failed to download ASAP data")
+                    with _state.lock:
+                        _state.current_task_id = None
+                    continue
+            data_path = asap_path
+
         # Create work directory
         work_dir = data_dir / "work" / task_id
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -527,7 +565,7 @@ def worker_loop(client: APIClient, data_dir: Path, single: bool = False):
                 client=client,
                 task_id=task_id,
                 config=config,
-                data_path=asap_path,
+                data_path=data_path,
                 work_dir=work_dir,
             )
 
