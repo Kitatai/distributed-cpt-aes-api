@@ -232,10 +232,25 @@ class APIClient:
 
     def upload_metrics(self, task_id: str, epoch: int, metrics: Dict[str, Any]) -> bool:
         """Upload metrics for an epoch."""
+        import math
+        import json
+
+        def replace_nan(obj):
+            """Recursively replace NaN/Inf values with None."""
+            if isinstance(obj, dict):
+                return {k: replace_nan(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [replace_nan(v) for v in obj]
+            elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                return None
+            return obj
+
         try:
+            # Replace NaN/Inf values before JSON serialization
+            clean_metrics = replace_nan(metrics)
             resp = requests.post(
                 self._url(f"/results/{task_id}/epoch/{epoch}/metrics"),
-                json=metrics,
+                json=clean_metrics,
                 timeout=30,
             )
             resp.raise_for_status()
