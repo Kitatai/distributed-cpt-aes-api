@@ -21,6 +21,7 @@ import aiofiles
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.responses import FileResponse, JSONResponse
 from filelock import FileLock
+from pydantic import BaseModel
 
 # Add shared models path
 sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
