@@ -86,6 +86,58 @@ class NewlineStoppingCriteria(StoppingCriteria):
         return last_token in self.stop_token_ids
 
 
+class ScoreTokenSets:
+    """
+    Pre-computed token sets for score generation constraints.
+
+    This class is created once per tokenizer and cached for reuse,
+    avoiding repeated vocabulary scans.
+    """
+
+    def __init__(self, tokenizer: PreTrainedTokenizer):
+        """Build token sets from tokenizer vocabulary."""
+        self.space_tokens: set = set()
+        self.digit_tokens: set = set()
+        self.newline_tokens: set = set()
+        self.boundary_tokens: set = set()
+
+        vocab_size = tokenizer.vocab_size
+        for token_id in range(vocab_size):
+            try:
+                decoded = tokenizer.decode([token_id])
+
+                # Boundary tokens: SentencePiece word boundary markers
+                if decoded == "":
+                    self.boundary_tokens.add(token_id)
+                    continue
+
+                # Space tokens: whitespace but NOT newline
+                if decoded.strip() == "" and "\n" not in decoded:
+                    self.space_tokens.add(token_id)
+
+                # Digit tokens: tokens containing only digits (possibly with leading space)
+                stripped = decoded.lstrip()
+                if stripped and all(c.isdigit() for c in stripped):
+                    self.digit_tokens.add(token_id)
+
+                # Newline tokens: tokens containing newline
+                if "\n" in decoded:
+                    self.newline_tokens.add(token_id)
+
+            except Exception:
+                continue
+
+        # Pre-compute combined sets for efficiency
+        self.valid_first_tokens = self.space_tokens | self.digit_tokens | self.boundary_tokens
+        self.valid_after_digits = self.digit_tokens | self.newline_tokens
+
+        logger.info(
+            f"ScoreTokenSets built: space={len(self.space_tokens)}, "
+            f"digit={len(self.digit_tokens)}, newline={len(self.newline_tokens)}, "
+            f"boundary={len(self.boundary_tokens)}"
+        )
+
+
 class ConstrainedScoreLogitsProcessor(LogitsProcessor):
     """
     Logits processor that constrains output to valid score tokens only.
@@ -99,65 +151,23 @@ class ConstrainedScoreLogitsProcessor(LogitsProcessor):
     (digits optionally preceded by space and terminated by newline).
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, input_length: int):
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        input_length: int,
+        token_sets: ScoreTokenSets,
+    ):
         """
         Initialize the processor.
 
         Args:
-            tokenizer: The tokenizer to use for token classification
+            tokenizer: The tokenizer (for decoding generated tokens)
             input_length: Length of input tokens (to know when generation starts)
+            token_sets: Pre-computed token sets (cached for efficiency)
         """
         self.tokenizer = tokenizer
         self.input_length = input_length
-
-        # Build token sets
-        self._space_tokens: set = set()
-        self._digit_tokens: set = set()
-        self._newline_tokens: set = set()
-        self._boundary_tokens: set = set()
-        self._build_token_sets()
-
-    def _build_token_sets(self):
-        """Pre-compute sets of valid tokens."""
-        vocab_size = self.tokenizer.vocab_size
-
-        for token_id in range(vocab_size):
-            try:
-                decoded = self.tokenizer.decode([token_id])
-
-                # Boundary tokens: SentencePiece word boundary markers
-                if decoded == "":
-                    self._boundary_tokens.add(token_id)
-                    continue
-
-                # Space tokens: whitespace but NOT newline
-                if decoded.strip() == "" and "\n" not in decoded:
-                    self._space_tokens.add(token_id)
-
-                # Digit tokens: tokens containing only digits (possibly with leading space)
-                stripped = decoded.lstrip()
-                if stripped and all(c.isdigit() for c in stripped):
-                    self._digit_tokens.add(token_id)
-
-                # Newline tokens: tokens containing newline
-                if "\n" in decoded:
-                    self._newline_tokens.add(token_id)
-
-            except Exception:
-                continue
-
-    def _get_valid_first_tokens(self) -> set:
-        """Get tokens valid as first generated token."""
-        return self._space_tokens | self._digit_tokens | self._boundary_tokens
-
-    def _get_valid_continuation_tokens(self, has_digits: bool) -> set:
-        """Get tokens valid as continuation."""
-        if has_digits:
-            # After digits: more digits or newline
-            return self._digit_tokens | self._newline_tokens
-        else:
-            # Before digits (after space/boundary): only digits
-            return self._digit_tokens
+        self.token_sets = token_sets
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         """
@@ -175,13 +185,17 @@ class ConstrainedScoreLogitsProcessor(LogitsProcessor):
 
         if generated_length == 0:
             # First generated token
-            valid_tokens = self._get_valid_first_tokens()
+            valid_tokens = self.token_sets.valid_first_tokens
         else:
             # Check if we have digits in the generated portion
             generated_ids = input_ids[0, self.input_length:].tolist()
             generated_text = self.tokenizer.decode(generated_ids)
             has_digits = any(c.isdigit() for c in generated_text)
-            valid_tokens = self._get_valid_continuation_tokens(has_digits)
+
+            if has_digits:
+                valid_tokens = self.token_sets.valid_after_digits
+            else:
+                valid_tokens = self.token_sets.digit_tokens
 
         # Create mask: True for tokens to KEEP
         mask = torch.zeros(scores.shape[-1], dtype=torch.bool, device=scores.device)
@@ -244,6 +258,7 @@ class ZeroShotScorer:
         self.prompt_builder: Optional[ScoringPromptBuilder] = None
         self.stopping_criteria: Optional[StoppingCriteriaList] = None
         self._adapter_loaded = False
+        self._score_token_sets: Optional[ScoreTokenSets] = None
 
         # Create prompt builder
         self.prompt_builder = create_prompt_builder(
@@ -294,6 +309,9 @@ class ZeroShotScorer:
             NewlineStoppingCriteria(self.tokenizer)
         ])
 
+        # Build token sets for constrained decoding (cached for efficiency)
+        self._score_token_sets = ScoreTokenSets(self.tokenizer)
+
         logger.info("Model loaded successfully")
 
     def load_adapter(self, adapter_path: str):
@@ -341,13 +359,17 @@ class ZeroShotScorer:
             tokenizer: Tokenizer
         """
         self.model = model
-        self.tokenizer = tokenizer
         self._adapter_loaded = hasattr(model, 'peft_config')
 
-        # Setup stopping criteria
-        self.stopping_criteria = StoppingCriteriaList([
-            NewlineStoppingCriteria(self.tokenizer)
-        ])
+        # Only rebuild token sets if tokenizer changed
+        if self.tokenizer is not tokenizer:
+            self.tokenizer = tokenizer
+            # Setup stopping criteria
+            self.stopping_criteria = StoppingCriteriaList([
+                NewlineStoppingCriteria(self.tokenizer)
+            ])
+            # Build token sets for constrained decoding (cached for efficiency)
+            self._score_token_sets = ScoreTokenSets(self.tokenizer)
 
         logger.info("Model set from external source")
 
@@ -424,9 +446,13 @@ class ZeroShotScorer:
         inputs = self._prepare_input(essay_text)
         input_length = inputs['input_ids'].shape[1]
 
-        # Create constrained logits processor
+        # Create constrained logits processor (using cached token sets)
         logits_processor = LogitsProcessorList([
-            ConstrainedScoreLogitsProcessor(self.tokenizer, input_length)
+            ConstrainedScoreLogitsProcessor(
+                self.tokenizer,
+                input_length,
+                self._score_token_sets,
+            )
         ])
 
         # Generate with constrained decoding
