@@ -32,7 +32,7 @@ distributed_exp_api/
 
 ## 実験内容
 
-- **8 prompts** (ASAP 1-8) × **3 models** (Llama, Qwen, Mistral) = **24実験**
+- **8 prompts** (ASAP 1-8) × **4 models** (Llama-3.2-3B, Llama-3.1-8B, Qwen2.5-7B, Mistral-7B) = **32実験**
 - 各実験: 30エポックの継続事前学習 + ゼロショット採点（Greedy Decoding）
 - 1実験あたり約1-2時間（GPUによる）
 
@@ -118,7 +118,7 @@ bash run.sh
 # バックグラウンドで起動（推奨、SSH切断後も継続）
 bash run_background.sh --server http://SERVER_IP:8000
 
-# ワーカー停止
+# ワーカー停止（graceful shutdown: タスクを自動的にリリース）
 bash stop.sh
 
 # ログ確認
@@ -126,6 +126,9 @@ tail -f worker.log
 
 # フォアグラウンドで起動（デバッグ用）
 bash run.sh --server http://SERVER_IP:8000
+
+# フォアグラウンドで停止（Ctrl+C で graceful shutdown）
+# → 実行中のタスクが自動的にサーバーにリリースされ、他のワーカーが続行可能
 
 # 1タスクだけ実行して終了
 bash run.sh --server http://SERVER_IP:8000 --single
@@ -260,6 +263,7 @@ server/data/
 ## 注意事項
 
 - サーバーは実験中は起動し続けてください
-- クライアントは途中で停止しても、再起動すれば続きから実行されます
+- クライアントは `stop.sh` または `Ctrl+C` で停止すると、タスクが自動的にリリースされます
+- リリースされたタスクは他のワーカー（または再起動後の同じワーカー）が続きから実行できます
 - 最終結果はすべてサーバーの `data/results/` に保存されます
 - `run_background.sh` を使えばSSH切断後もプロセスは継続します
