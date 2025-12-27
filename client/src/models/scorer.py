@@ -92,12 +92,25 @@ class ScoreTokenSets:
 
     This class is created once per tokenizer and cached for reuse,
     avoiding repeated vocabulary scans.
+
+    Token categories:
+    - pure_digit_tokens: Tokens with ONLY digits, no spaces (e.g., "1", "12")
+    - space_digit_tokens: Tokens with leading space + digits (e.g., " 1", " 12")
+    - space_tokens: Pure whitespace tokens (e.g., " ", "  ")
+    - newline_tokens: Tokens containing newline (e.g., "\\n")
+    - boundary_tokens: Empty string tokens (SentencePiece markers)
+
+    Rules:
+    - First token: space | space_digit | pure_digit | boundary
+    - After first (no digits yet): pure_digit only
+    - After digits: pure_digit | newline
     """
 
     def __init__(self, tokenizer: PreTrainedTokenizer):
         """Build token sets from tokenizer vocabulary."""
         self.space_tokens: set = set()
-        self.digit_tokens: set = set()
+        self.pure_digit_tokens: set = set()
+        self.space_digit_tokens: set = set()
         self.newline_tokens: set = set()
         self.boundary_tokens: set = set()
 
@@ -114,27 +127,42 @@ class ScoreTokenSets:
                 # Space tokens: whitespace but NOT newline
                 if decoded.strip() == "" and "\n" not in decoded:
                     self.space_tokens.add(token_id)
-
-                # Digit tokens: tokens containing only digits (possibly with leading space)
-                stripped = decoded.lstrip()
-                if stripped and all(c.isdigit() for c in stripped):
-                    self.digit_tokens.add(token_id)
+                    continue
 
                 # Newline tokens: tokens containing newline
                 if "\n" in decoded:
                     self.newline_tokens.add(token_id)
+                    continue
+
+                # Check if it's a digit token
+                stripped = decoded.lstrip()
+                if stripped and all(c.isdigit() for c in stripped):
+                    # Distinguish between pure digits and space+digits
+                    if decoded[0].isdigit():
+                        # No leading space: pure digit token
+                        self.pure_digit_tokens.add(token_id)
+                    else:
+                        # Has leading space: space+digit token
+                        self.space_digit_tokens.add(token_id)
 
             except Exception:
                 continue
 
         # Pre-compute combined sets for efficiency
-        self.valid_first_tokens = self.space_tokens | self.digit_tokens | self.boundary_tokens
-        self.valid_after_digits = self.digit_tokens | self.newline_tokens
+        # First token: can start with space, space+digit, pure digit, or boundary
+        self.valid_first_tokens = (
+            self.space_tokens |
+            self.space_digit_tokens |
+            self.pure_digit_tokens |
+            self.boundary_tokens
+        )
+        # After digits: only pure digits or newline (no more spaces allowed)
+        self.valid_continuation = self.pure_digit_tokens | self.newline_tokens
 
         logger.info(
-            f"ScoreTokenSets built: space={len(self.space_tokens)}, "
-            f"digit={len(self.digit_tokens)}, newline={len(self.newline_tokens)}, "
-            f"boundary={len(self.boundary_tokens)}"
+            f"ScoreTokenSets built: pure_digit={len(self.pure_digit_tokens)}, "
+            f"space_digit={len(self.space_digit_tokens)}, space={len(self.space_tokens)}, "
+            f"newline={len(self.newline_tokens)}, boundary={len(self.boundary_tokens)}"
         )
 
 
@@ -142,13 +170,13 @@ class ConstrainedScoreLogitsProcessor(LogitsProcessor):
     """
     Logits processor that constrains output to valid score tokens only.
 
-    Allows only:
-    - First token: space, digit, or boundary tokens
-    - Continuation after digits: digit or newline tokens
-    - Continuation before digits: digit tokens only
+    Strict rules:
+    - First token: space | space+digit | pure_digit | boundary
+    - After first token (no digits yet): pure_digit only
+    - After any digit appears: pure_digit | newline only
 
-    This ensures the model can only generate valid score outputs
-    (digits optionally preceded by space and terminated by newline).
+    This ensures output is exactly: [optional space][digits][newline]
+    No spaces are allowed after the first token.
     """
 
     def __init__(
@@ -184,18 +212,20 @@ class ConstrainedScoreLogitsProcessor(LogitsProcessor):
         generated_length = input_ids.shape[1] - self.input_length
 
         if generated_length == 0:
-            # First generated token
+            # First generated token: allow space, space+digit, pure digit, boundary
             valid_tokens = self.token_sets.valid_first_tokens
         else:
-            # Check if we have digits in the generated portion
+            # After first token: check if we have digits
             generated_ids = input_ids[0, self.input_length:].tolist()
             generated_text = self.tokenizer.decode(generated_ids)
             has_digits = any(c.isdigit() for c in generated_text)
 
             if has_digits:
-                valid_tokens = self.token_sets.valid_after_digits
+                # After digits: only pure digits or newline (no spaces)
+                valid_tokens = self.token_sets.valid_continuation
             else:
-                valid_tokens = self.token_sets.digit_tokens
+                # After space/boundary but no digits yet: only pure digits
+                valid_tokens = self.token_sets.pure_digit_tokens
 
         # Create mask: True for tokens to KEEP
         mask = torch.zeros(scores.shape[-1], dtype=torch.bool, device=scores.device)
