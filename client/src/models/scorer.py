@@ -18,6 +18,8 @@ from transformers import (
     PreTrainedTokenizer,
     StoppingCriteria,
     StoppingCriteriaList,
+    LogitsProcessor,
+    LogitsProcessorList,
 )
 from peft import PeftModel, get_peft_model, LoraConfig
 
@@ -82,6 +84,116 @@ class NewlineStoppingCriteria(StoppingCriteria):
             return False
         last_token = input_ids[0, -1].item()
         return last_token in self.stop_token_ids
+
+
+class ConstrainedScoreLogitsProcessor(LogitsProcessor):
+    """
+    Logits processor that constrains output to valid score tokens only.
+
+    Allows only:
+    - First token: space, digit, or boundary tokens
+    - Continuation after digits: digit or newline tokens
+    - Continuation before digits: digit tokens only
+
+    This ensures the model can only generate valid score outputs
+    (digits optionally preceded by space and terminated by newline).
+    """
+
+    def __init__(self, tokenizer: PreTrainedTokenizer, input_length: int):
+        """
+        Initialize the processor.
+
+        Args:
+            tokenizer: The tokenizer to use for token classification
+            input_length: Length of input tokens (to know when generation starts)
+        """
+        self.tokenizer = tokenizer
+        self.input_length = input_length
+
+        # Build token sets
+        self._space_tokens: set = set()
+        self._digit_tokens: set = set()
+        self._newline_tokens: set = set()
+        self._boundary_tokens: set = set()
+        self._build_token_sets()
+
+    def _build_token_sets(self):
+        """Pre-compute sets of valid tokens."""
+        vocab_size = self.tokenizer.vocab_size
+
+        for token_id in range(vocab_size):
+            try:
+                decoded = self.tokenizer.decode([token_id])
+
+                # Boundary tokens: SentencePiece word boundary markers
+                if decoded == "":
+                    self._boundary_tokens.add(token_id)
+                    continue
+
+                # Space tokens: whitespace but NOT newline
+                if decoded.strip() == "" and "\n" not in decoded:
+                    self._space_tokens.add(token_id)
+
+                # Digit tokens: tokens containing only digits (possibly with leading space)
+                stripped = decoded.lstrip()
+                if stripped and all(c.isdigit() for c in stripped):
+                    self._digit_tokens.add(token_id)
+
+                # Newline tokens: tokens containing newline
+                if "\n" in decoded:
+                    self._newline_tokens.add(token_id)
+
+            except Exception:
+                continue
+
+    def _get_valid_first_tokens(self) -> set:
+        """Get tokens valid as first generated token."""
+        return self._space_tokens | self._digit_tokens | self._boundary_tokens
+
+    def _get_valid_continuation_tokens(self, has_digits: bool) -> set:
+        """Get tokens valid as continuation."""
+        if has_digits:
+            # After digits: more digits or newline
+            return self._digit_tokens | self._newline_tokens
+        else:
+            # Before digits (after space/boundary): only digits
+            return self._digit_tokens
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        """
+        Process logits to mask invalid tokens.
+
+        Args:
+            input_ids: Current sequence of token IDs
+            scores: Logits for next token
+
+        Returns:
+            Modified logits with invalid tokens masked to -inf
+        """
+        # Calculate how many tokens have been generated
+        generated_length = input_ids.shape[1] - self.input_length
+
+        if generated_length == 0:
+            # First generated token
+            valid_tokens = self._get_valid_first_tokens()
+        else:
+            # Check if we have digits in the generated portion
+            generated_ids = input_ids[0, self.input_length:].tolist()
+            generated_text = self.tokenizer.decode(generated_ids)
+            has_digits = any(c.isdigit() for c in generated_text)
+            valid_tokens = self._get_valid_continuation_tokens(has_digits)
+
+        # Create mask: True for tokens to KEEP
+        mask = torch.zeros(scores.shape[-1], dtype=torch.bool, device=scores.device)
+        for token_id in valid_tokens:
+            if token_id < scores.shape[-1]:
+                mask[token_id] = True
+
+        # Set invalid tokens to -inf
+        scores = scores.clone()
+        scores[:, ~mask] = float('-inf')
+
+        return scores
 
 
 class ZeroShotScorer:
@@ -294,7 +406,10 @@ class ZeroShotScorer:
         max_new_tokens: int = 4,  # Reduced: scores are 1-2 digits
     ) -> Tuple[Optional[int], bool, str]:
         """
-        Score an essay using greedy decoding.
+        Score an essay using constrained greedy decoding.
+
+        Uses ConstrainedScoreLogitsProcessor to restrict output to valid
+        score tokens only (digits, spaces, newlines), ensuring parseable output.
 
         Args:
             essay_text: Essay text to score
@@ -309,7 +424,12 @@ class ZeroShotScorer:
         inputs = self._prepare_input(essay_text)
         input_length = inputs['input_ids'].shape[1]
 
-        # Generate with optimized settings
+        # Create constrained logits processor
+        logits_processor = LogitsProcessorList([
+            ConstrainedScoreLogitsProcessor(self.tokenizer, input_length)
+        ])
+
+        # Generate with constrained decoding
         outputs = self.model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
@@ -318,6 +438,7 @@ class ZeroShotScorer:
             top_p=None,
             pad_token_id=self.tokenizer.pad_token_id,
             stopping_criteria=self.stopping_criteria,
+            logits_processor=logits_processor,
             use_cache=True,  # Enable KV cache
         )
 
