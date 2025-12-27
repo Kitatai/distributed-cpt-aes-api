@@ -71,16 +71,17 @@ ASAP_SCORE_RANGES = {
     8: (0, 60),
 }
 
-# TOEFL11 score ranges (low=0, medium=1, high=2 for all prompts)
+# TOEFL11 score ranges (low=1, medium=2, high=3 for all prompts)
+# Using 1-3 instead of 0-2 for early termination optimization compatibility
 TOEFL11_SCORE_RANGES = {
-    1: (0, 2),
-    2: (0, 2),
-    3: (0, 2),
-    4: (0, 2),
-    5: (0, 2),
-    6: (0, 2),
-    7: (0, 2),
-    8: (0, 2),
+    1: (1, 3),
+    2: (1, 3),
+    3: (1, 3),
+    4: (1, 3),
+    5: (1, 3),
+    6: (1, 3),
+    7: (1, 3),
+    8: (1, 3),
 }
 
 

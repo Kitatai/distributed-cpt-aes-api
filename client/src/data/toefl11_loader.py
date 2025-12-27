@@ -16,11 +16,11 @@ from .data_loader import EssayData, DatasetSplit
 
 logger = logging.getLogger(__name__)
 
-# Score level mapping
+# Score level mapping (1-3 for early termination optimization compatibility)
 SCORE_LEVEL_MAP = {
-    'low': 0,
-    'medium': 1,
-    'high': 2,
+    'low': 1,
+    'medium': 2,
+    'high': 3,
 }
 
 
