@@ -88,7 +88,7 @@ class NewlineStoppingCriteria(StoppingCriteria):
 
 class ScoreTokenSets:
     """
-    Pre-computed token sets for score generation constraints.
+    Pre-computed token sets and masks for score generation constraints.
 
     This class is created once per tokenizer and cached for reuse,
     avoiding repeated vocabulary scans.
@@ -104,15 +104,18 @@ class ScoreTokenSets:
     - First token: space | space_digit | pure_digit | boundary
     - After first (no digits yet): pure_digit only
     - After digits: pure_digit | newline
+
+    Pre-computed masks are stored for fast GPU-based masking.
     """
 
     def __init__(self, tokenizer: PreTrainedTokenizer):
-        """Build token sets from tokenizer vocabulary."""
+        """Build token sets and masks from tokenizer vocabulary."""
         self.space_tokens: set = set()
         self.pure_digit_tokens: set = set()
         self.space_digit_tokens: set = set()
         self.newline_tokens: set = set()
         self.boundary_tokens: set = set()
+        self.digit_containing_tokens: set = set()  # Any token containing digits
 
         vocab_size = tokenizer.vocab_size
         for token_id in range(vocab_size):
@@ -137,6 +140,8 @@ class ScoreTokenSets:
                 # Check if it's a digit token
                 stripped = decoded.lstrip()
                 if stripped and all(c.isdigit() for c in stripped):
+                    # Track all digit-containing tokens for quick lookup
+                    self.digit_containing_tokens.add(token_id)
                     # Distinguish between pure digits and space+digits
                     if decoded[0].isdigit():
                         # No leading space: pure digit token
@@ -159,11 +164,45 @@ class ScoreTokenSets:
         # After digits: only pure digits or newline (no more spaces allowed)
         self.valid_continuation = self.pure_digit_tokens | self.newline_tokens
 
+        # Pre-compute boolean masks as tensors for fast GPU masking
+        self._vocab_size = vocab_size
+        self._masks_device = None
+        self._first_token_mask = None
+        self._continuation_mask = None
+        self._pure_digit_mask = None
+
         logger.info(
             f"ScoreTokenSets built: pure_digit={len(self.pure_digit_tokens)}, "
             f"space_digit={len(self.space_digit_tokens)}, space={len(self.space_tokens)}, "
             f"newline={len(self.newline_tokens)}, boundary={len(self.boundary_tokens)}"
         )
+
+    def _build_mask(self, token_set: set, device: torch.device) -> torch.Tensor:
+        """Build a boolean mask tensor from a token set."""
+        mask = torch.zeros(self._vocab_size, dtype=torch.bool, device=device)
+        if token_set:
+            indices = torch.tensor(list(token_set), dtype=torch.long, device=device)
+            mask[indices] = True
+        return mask
+
+    def get_masks(self, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Get pre-computed masks on the specified device.
+
+        Returns:
+            Tuple of (first_token_mask, continuation_mask, pure_digit_mask)
+        """
+        if self._masks_device != device:
+            # Build masks on the correct device
+            self._first_token_mask = self._build_mask(self.valid_first_tokens, device)
+            self._continuation_mask = self._build_mask(self.valid_continuation, device)
+            self._pure_digit_mask = self._build_mask(self.pure_digit_tokens, device)
+            self._masks_device = device
+        return self._first_token_mask, self._continuation_mask, self._pure_digit_mask
+
+    def token_contains_digit(self, token_id: int) -> bool:
+        """Check if a token contains any digit."""
+        return token_id in self.digit_containing_tokens
 
 
 class ConstrainedScoreLogitsProcessor(LogitsProcessor):
@@ -177,6 +216,10 @@ class ConstrainedScoreLogitsProcessor(LogitsProcessor):
 
     This ensures output is exactly: [optional space][digits][newline]
     No spaces are allowed after the first token.
+
+    Optimized for performance:
+    - Uses pre-computed GPU tensors for masking (no Python loops)
+    - Tracks digit state via token IDs instead of decoding (no tokenizer calls)
     """
 
     def __init__(
@@ -189,13 +232,17 @@ class ConstrainedScoreLogitsProcessor(LogitsProcessor):
         Initialize the processor.
 
         Args:
-            tokenizer: The tokenizer (for decoding generated tokens)
+            tokenizer: The tokenizer (unused, kept for API compatibility)
             input_length: Length of input tokens (to know when generation starts)
             token_sets: Pre-computed token sets (cached for efficiency)
         """
-        self.tokenizer = tokenizer
         self.input_length = input_length
         self.token_sets = token_sets
+        self._has_seen_digit = False  # Track state without decoding
+        self._masks_initialized = False
+        self._first_mask = None
+        self._cont_mask = None
+        self._digit_mask = None
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         """
@@ -208,34 +255,42 @@ class ConstrainedScoreLogitsProcessor(LogitsProcessor):
         Returns:
             Modified logits with invalid tokens masked to -inf
         """
+        # Initialize masks on first call (on correct device)
+        if not self._masks_initialized:
+            self._first_mask, self._cont_mask, self._digit_mask = \
+                self.token_sets.get_masks(scores.device)
+            self._masks_initialized = True
+
         # Calculate how many tokens have been generated
         generated_length = input_ids.shape[1] - self.input_length
 
         if generated_length == 0:
             # First generated token: allow space, space+digit, pure digit, boundary
-            valid_tokens = self.token_sets.valid_first_tokens
+            mask = self._first_mask
         else:
-            # After first token: check if we have digits
-            generated_ids = input_ids[0, self.input_length:].tolist()
-            generated_text = self.tokenizer.decode(generated_ids)
-            has_digits = any(c.isdigit() for c in generated_text)
+            # Check if last generated token contained a digit (fast O(1) lookup)
+            if not self._has_seen_digit:
+                last_token = input_ids[0, -1].item()
+                if self.token_sets.token_contains_digit(last_token):
+                    self._has_seen_digit = True
 
-            if has_digits:
+            if self._has_seen_digit:
                 # After digits: only pure digits or newline (no spaces)
-                valid_tokens = self.token_sets.valid_continuation
+                mask = self._cont_mask
             else:
                 # After space/boundary but no digits yet: only pure digits
-                valid_tokens = self.token_sets.pure_digit_tokens
+                mask = self._digit_mask
 
-        # Create mask: True for tokens to KEEP
-        mask = torch.zeros(scores.shape[-1], dtype=torch.bool, device=scores.device)
-        for token_id in valid_tokens:
-            if token_id < scores.shape[-1]:
-                mask[token_id] = True
+        # Apply mask efficiently using pre-computed tensor
+        # Handle vocab size mismatch (scores might be larger due to padding)
+        if scores.shape[-1] > mask.shape[-1]:
+            # Extend mask with False for extra tokens
+            extended_mask = torch.zeros(scores.shape[-1], dtype=torch.bool, device=scores.device)
+            extended_mask[:mask.shape[-1]] = mask
+            mask = extended_mask
 
-        # Set invalid tokens to -inf
-        scores = scores.clone()
-        scores[:, ~mask] = float('-inf')
+        # Set invalid tokens to -inf (in-place for efficiency)
+        scores = scores.masked_fill(~mask, float('-inf'))
 
         return scores
 
