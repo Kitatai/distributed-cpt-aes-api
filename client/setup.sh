@@ -26,23 +26,15 @@ if [ ! -f ".python-version" ]; then
     echo "Created .python-version (Python 3.12)"
 fi
 
-# Sync environment
+# Sync environment with optional CUDA dependencies (includes flash-attn)
 echo ""
-echo "Installing dependencies..."
-uv sync
-
-# Install Flash Attention (optional)
-echo ""
-echo "Installing Flash Attention 2 (optional, may take several minutes)..."
-echo "If this fails, the experiment will still work (just slower)."
-
-uv pip install setuptools wheel ninja
-
-if uv pip install flash-attn --no-build-isolation; then
-    echo "Flash Attention 2 installed successfully!"
+echo "Installing dependencies (including Flash Attention if CUDA available)..."
+if uv sync --extra cuda; then
+    echo "All dependencies installed successfully!"
 else
-    echo "WARNING: Flash Attention installation failed."
-    echo "The experiment will work, but may be slower."
+    echo "WARNING: Some optional dependencies failed to install."
+    echo "Falling back to base dependencies only..."
+    uv sync
 fi
 
 echo ""

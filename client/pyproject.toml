@@ -25,3 +25,11 @@ dependencies = [
 
 [project.scripts]
 cpt-worker = "worker:main"
+
+[project.optional-dependencies]
+cuda = [
+    "einops>=0.8.1",
+    "flash-attn>=2.8.3",
+    "ninja>=1.13.0",
+    "wheel>=0.45.1",
+]
