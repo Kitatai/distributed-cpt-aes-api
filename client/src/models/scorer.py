@@ -723,7 +723,7 @@ class ZeroShotScorer:
             # Empty suffix - fall back to non-cached scoring
             logger.warning(f"Suffix preparation failed: {e}. Falling back to non-cached scoring.")
             self._prefix_cache_valid = False
-            return self.score_essay(essay_text, max_new_tokens)
+            return self.score_essay_greedy(essay_text, max_new_tokens)
 
         # Use the working cache (created once, reused for all essays)
         # After each essay, we crop it back to prefix length
@@ -750,9 +750,9 @@ class ZeroShotScorer:
             except Exception as e:
                 # Fallback: recompute prefix cache or use non-cached scoring
                 logger.warning(f"Failed to clone prefix cache: {e}. Falling back to non-cached scoring.")
-                # Mark cache as invalid and use score_essay instead
+                # Mark cache as invalid and use score_essay_greedy instead
                 self._prefix_cache_valid = False
-                return self.score_essay(essay_text, max_new_tokens)
+                return self.score_essay_greedy(essay_text, max_new_tokens)
 
         # Forward pass through suffix with working cache
         try:
@@ -767,7 +767,7 @@ class ZeroShotScorer:
                 logger.warning(f"Mistral cache reshape error: {e}. Falling back to non-cached scoring.")
                 self._prefix_cache_valid = False
                 self._working_cache = None
-                return self.score_essay(essay_text, max_new_tokens)
+                return self.score_essay_greedy(essay_text, max_new_tokens)
             raise
 
         # Get logits for greedy decoding
