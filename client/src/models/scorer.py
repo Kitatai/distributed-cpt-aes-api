@@ -712,13 +712,30 @@ class ZeroShotScorer:
         # After each essay, we crop it back to prefix length
         if not hasattr(self, '_working_cache') or self._working_cache is None:
             # First call: clone the prefix cache using legacy format conversion
-            legacy_cache = self._prefix_kv_cache.to_legacy_cache()
-            # Deep clone the tensors
-            cloned_legacy = tuple(
-                tuple(t.clone() for t in layer)
-                for layer in legacy_cache
-            )
-            self._working_cache = DynamicCache.from_legacy_cache(cloned_legacy)
+            try:
+                legacy_cache = self._prefix_kv_cache.to_legacy_cache()
+
+                # Debug: log cache structure
+                if legacy_cache:
+                    first_layer = legacy_cache[0]
+                    logger.debug(f"Legacy cache: {len(legacy_cache)} layers, first layer shapes: {[t.shape for t in first_layer]}")
+                    # Check for empty cache (0 sequence length)
+                    if first_layer[0].shape[2] == 0:
+                        logger.warning(f"Empty KV cache detected! Prefix length was {self._prefix_length}")
+                        raise ValueError("Empty KV cache - falling back to non-cached scoring")
+
+                # Deep clone the tensors
+                cloned_legacy = tuple(
+                    tuple(t.clone() for t in layer)
+                    for layer in legacy_cache
+                )
+                self._working_cache = DynamicCache.from_legacy_cache(cloned_legacy)
+            except Exception as e:
+                # Fallback: recompute prefix cache or use non-cached scoring
+                logger.warning(f"Failed to clone prefix cache: {e}. Falling back to non-cached scoring.")
+                # Mark cache as invalid and use score_essay instead
+                self._prefix_cache_valid = False
+                return self.score_essay(essay_text, max_new_tokens)
 
         # Forward pass through suffix with working cache
         suffix_outputs = self.model(
