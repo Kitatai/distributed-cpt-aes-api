@@ -628,6 +628,12 @@ class ZeroShotScorer:
         # Extract suffix (everything after the prefix)
         suffix_text = full_text[len(self._prefix_text):]
 
+        # Debug: check for empty suffix
+        if not suffix_text.strip():
+            logger.warning(f"Empty suffix detected! prefix_len={len(self._prefix_text)}, full_len={len(full_text)}")
+            logger.warning(f"Prefix text ends with: {repr(self._prefix_text[-100:])}")
+            logger.warning(f"Full text ends with: {repr(full_text[-100:])}")
+
         # Tokenize suffix without adding BOS token
         suffix_inputs = self.tokenizer(
             suffix_text,
@@ -636,6 +642,11 @@ class ZeroShotScorer:
             max_length=4096,
             add_special_tokens=False,  # Don't add BOS again
         )
+
+        # Check for empty tokenization
+        if suffix_inputs['input_ids'].shape[1] == 0:
+            logger.error(f"Suffix tokenized to 0 tokens! suffix_text={repr(suffix_text[:200])}")
+            raise ValueError("Empty suffix - cannot use prefix caching for this input")
 
         return {k: v.to(self.device) for k, v in suffix_inputs.items()}
 
@@ -706,7 +717,13 @@ class ZeroShotScorer:
             raise RuntimeError("Prefix cache not computed. Call compute_prefix_cache() first.")
 
         # Prepare suffix input
-        suffix_inputs = self._prepare_suffix_input(essay_text)
+        try:
+            suffix_inputs = self._prepare_suffix_input(essay_text)
+        except ValueError as e:
+            # Empty suffix - fall back to non-cached scoring
+            logger.warning(f"Suffix preparation failed: {e}. Falling back to non-cached scoring.")
+            self._prefix_cache_valid = False
+            return self.score_essay(essay_text, max_new_tokens)
 
         # Use the working cache (created once, reused for all essays)
         # After each essay, we crop it back to prefix length
@@ -738,11 +755,20 @@ class ZeroShotScorer:
                 return self.score_essay(essay_text, max_new_tokens)
 
         # Forward pass through suffix with working cache
-        suffix_outputs = self.model(
-            input_ids=suffix_inputs['input_ids'],
-            past_key_values=self._working_cache,
-            use_cache=True,
-        )
+        try:
+            suffix_outputs = self.model(
+                input_ids=suffix_inputs['input_ids'],
+                past_key_values=self._working_cache,
+                use_cache=True,
+            )
+        except RuntimeError as e:
+            if "reshape" in str(e) and "0 elements" in str(e):
+                # Mistral-specific cache issue - fall back to non-cached scoring
+                logger.warning(f"Mistral cache reshape error: {e}. Falling back to non-cached scoring.")
+                self._prefix_cache_valid = False
+                self._working_cache = None
+                return self.score_essay(essay_text, max_new_tokens)
+            raise
 
         # Get logits for greedy decoding
         next_token_logits = suffix_outputs.logits[0, -1, :]
