@@ -123,7 +123,7 @@ class DevSplitConfig:
 class ContinualPretrainingConfig:
     """Configuration for label-free continual pre-training with LoRA."""
     method: str = "lora"
-    lr: float = 1e-5
+    lr: float = 1e-6
     max_epochs: int = 30
     lora_r: int = 4
     lora_alpha: int = 16
@@ -132,7 +132,7 @@ class ContinualPretrainingConfig:
     )
     max_seq_len: int = 2048
     batch_size: int = 1
-    grad_accum_steps: int = 8
+    grad_accum_steps: int = 4
     warmup_ratio: float = 0.0
     weight_decay: float = 0.0
     save_every_epoch: bool = True
