@@ -41,15 +41,15 @@ PROMPT_STYLES = {
 }
 
 
-def find_completed_tasks(min_epochs: int = 30) -> list:
-    """Find tasks with at least min_epochs completed."""
-    completed = []
+def find_tasks_with_results(min_epochs: int = 1) -> list:
+    """Find tasks with at least min_epochs of results (including in-progress)."""
+    tasks = []
     for task_dir in RESULTS_DIR.iterdir():
         if task_dir.is_dir() and not task_dir.name.startswith("toefl11"):
             metrics_files = list(task_dir.glob("metrics_epoch_*.json"))
             if len(metrics_files) >= min_epochs:
-                completed.append(task_dir.name)
-    return sorted(completed)
+                tasks.append(task_dir.name)
+    return sorted(tasks)
 
 
 def load_task_metrics(task_id: str) -> dict:
@@ -89,8 +89,13 @@ def create_prompt_plot(prompt: str, tasks: dict, output_path: Path):
     for task_id, metrics in sorted(tasks.items()):
         model = task_id.split("_")[1]
         color = MODEL_COLORS.get(model, "#333333")
+        n_epochs = len(metrics["epochs"])
+        is_complete = n_epochs >= 31
+        linestyle = "-" if is_complete else "--"
+        label = model if is_complete else f"{model} ({n_epochs}ep)"
         ax1.plot(metrics["epochs"], metrics["qwk"],
-                 label=model, color=color, marker='o', markersize=3, linewidth=1.5)
+                 label=label, color=color, marker='o', markersize=3,
+                 linewidth=1.5, linestyle=linestyle)
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("QWK")
     ax1.set_title("Quadratic Weighted Kappa (QWK)")
@@ -103,8 +108,13 @@ def create_prompt_plot(prompt: str, tasks: dict, output_path: Path):
     for task_id, metrics in sorted(tasks.items()):
         model = task_id.split("_")[1]
         color = MODEL_COLORS.get(model, "#333333")
+        n_epochs = len(metrics["epochs"])
+        is_complete = n_epochs >= 31
+        linestyle = "-" if is_complete else "--"
+        label = model if is_complete else f"{model} ({n_epochs}ep)"
         ax2.plot(metrics["epochs"], metrics["spearman"],
-                 label=model, color=color, marker='o', markersize=3, linewidth=1.5)
+                 label=label, color=color, marker='o', markersize=3,
+                 linewidth=1.5, linestyle=linestyle)
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Spearman ρ")
     ax2.set_title("Spearman Rank Correlation")
@@ -120,15 +130,17 @@ def create_prompt_plot(prompt: str, tasks: dict, output_path: Path):
 def create_combined_plot(task_metrics: dict, output_path: Path):
     """Create a combined plot for all tasks."""
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    fig.suptitle("All Completed Tasks - Metrics over Epochs", fontsize=14)
+    fig.suptitle("All Tasks - Metrics over Epochs", fontsize=14)
 
     ax1, ax2 = axes
     for task_id, metrics in sorted(task_metrics.items()):
         prompt = task_id.split("_")[0]
         model = task_id.split("_")[1]
         color = MODEL_COLORS.get(model, "#333333")
-        style = PROMPT_STYLES.get(prompt, "-")
-        label = f"{prompt}_{model}"
+        n_epochs = len(metrics["epochs"])
+        is_complete = n_epochs >= 31
+        style = "-" if is_complete else "--"
+        label = f"{prompt}_{model}" if is_complete else f"{prompt}_{model} ({n_epochs}ep)"
 
         ax1.plot(metrics["epochs"], metrics["qwk"],
                  label=label, color=color, linestyle=style, marker='o', markersize=2, linewidth=1.2)
@@ -178,22 +190,24 @@ def main():
     # Create output directory
     VIS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Find completed tasks
-    completed_tasks = find_completed_tasks()
-    print(f"Found {len(completed_tasks)} completed tasks: {completed_tasks}")
+    # Find all tasks with results (including in-progress)
+    tasks_with_results = find_tasks_with_results()
+    print(f"Found {len(tasks_with_results)} tasks with results")
 
-    if not completed_tasks:
-        print("No completed tasks found.")
+    if not tasks_with_results:
+        print("No tasks with results found.")
         return
 
     # Load metrics for all tasks
     task_metrics = {}
-    for task_id in completed_tasks:
+    for task_id in tasks_with_results:
         metrics = load_task_metrics(task_id)
         if metrics["epochs"]:
             task_metrics[task_id] = metrics
-            print(f"  {task_id}: {len(metrics['epochs'])} epochs, "
-                  f"final QWK={metrics['qwk'][-1]:.4f}, "
+            n_epochs = len(metrics['epochs'])
+            status = "✓" if n_epochs >= 31 else f"({n_epochs}/31)"
+            print(f"  {task_id}: {n_epochs} epochs {status}, "
+                  f"latest QWK={metrics['qwk'][-1]:.4f}, "
                   f"Spearman={metrics['spearman'][-1]:.4f}")
 
     # Group by prompt
