@@ -132,7 +132,7 @@ class ContinualPretrainingConfig:
     )
     max_seq_len: int = 2048
     batch_size: int = 1
-    grad_accum_steps: int = 1
+    grad_accum_steps: int = 8
     warmup_ratio: float = 0.0
     weight_decay: float = 0.0
     save_every_epoch: bool = True
