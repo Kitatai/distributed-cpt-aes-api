@@ -123,7 +123,7 @@ class DevSplitConfig:
 class ContinualPretrainingConfig:
     """Configuration for label-free continual pre-training with LoRA."""
     method: str = "lora"
-    lr: float = 1e-6
+    lr: float = 1e-5
     max_epochs: int = 30
     lora_r: int = 4
     lora_alpha: int = 16
