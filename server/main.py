@@ -44,6 +44,18 @@ TOEFL11_DATA_DIR = DATA_DIR / "TOEFL11" / "ETS_Corpus_of_Non-Native_Written_Engl
 for d in [DATA_DIR, TASKS_DIR, CHECKPOINTS_DIR, RESULTS_DIR, ASAP_DATA_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
+# Experiment configuration file
+EXPERIMENT_CONFIG_PATH = DATA_DIR / "experiment_config.json"
+
+def load_experiment_config() -> dict:
+    """Load experiment configuration from JSON file."""
+    if EXPERIMENT_CONFIG_PATH.exists():
+        with open(EXPERIMENT_CONFIG_PATH) as f:
+            config = json.load(f)
+            # Remove comments
+            return {k: v for k, v in config.items() if not k.startswith("_")}
+    return {}
+
 # Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -392,17 +404,32 @@ async def get_task(task_id: str):
 
 @app.get("/tasks/{task_id}/config", response_model=ExperimentConfig)
 async def get_task_config(task_id: str):
-    """Get experiment configuration for a task."""
+    """Get experiment configuration for a task.
+
+    Merges task-specific settings with experiment_config.json values.
+    """
     task = load_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    # Load experiment config from file (re-read each time for hot-reload)
+    exp_config = load_experiment_config()
 
     return ExperimentConfig(
         task_id=task_id,
         prompt_id=task.prompt_id,
         model_name=task.model_name,
         dataset=task.dataset,
-        max_epochs=task.max_epochs,
+        max_epochs=exp_config.get("max_epochs", task.max_epochs),
+        lr=exp_config.get("lr", 1e-5),
+        lora_r=exp_config.get("lora_r", 16),
+        lora_alpha=exp_config.get("lora_alpha", 32),
+        max_seq_len=exp_config.get("max_seq_len", 2048),
+        batch_size=exp_config.get("batch_size", 1),
+        grad_accum_steps=exp_config.get("grad_accum_steps", 4),
+        seed=exp_config.get("seed", 42),
+        dev_M=exp_config.get("dev_M", 5),
+        dev_seed=exp_config.get("dev_seed", 42),
     )
 
 
@@ -830,6 +857,56 @@ async def check_toefl11_data():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+# ============================================================================
+# Experiment Configuration Endpoints
+# ============================================================================
+
+@app.get("/config")
+async def get_experiment_config():
+    """Get current experiment configuration."""
+    config = load_experiment_config()
+    return {
+        "config": config,
+        "config_path": str(EXPERIMENT_CONFIG_PATH),
+    }
+
+
+class ExperimentConfigUpdate(BaseModel):
+    lr: Optional[float] = None
+    lora_r: Optional[int] = None
+    lora_alpha: Optional[int] = None
+    max_seq_len: Optional[int] = None
+    batch_size: Optional[int] = None
+    grad_accum_steps: Optional[int] = None
+    max_epochs: Optional[int] = None
+    seed: Optional[int] = None
+    dev_M: Optional[int] = None
+    dev_seed: Optional[int] = None
+
+
+@app.put("/config")
+async def update_experiment_config(update: ExperimentConfigUpdate):
+    """Update experiment configuration.
+
+    Only provided fields are updated. Workers will pick up changes on next task claim.
+    """
+    # Load existing config
+    config = load_experiment_config()
+
+    # Update only provided fields
+    update_dict = update.model_dump(exclude_none=True)
+    config.update(update_dict)
+
+    # Save back to file
+    with open(EXPERIMENT_CONFIG_PATH, "w") as f:
+        config_with_comment = {"_comment": "Experiment configuration. Edit via API or directly."}
+        config_with_comment.update(config)
+        json.dump(config_with_comment, f, indent=2)
+
+    logger.info(f"Experiment config updated: {update_dict}")
+    return {"message": "Config updated", "config": config}
 
 
 def run_server():

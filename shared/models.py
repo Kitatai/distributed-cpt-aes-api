@@ -81,18 +81,23 @@ class CheckpointInfo(BaseModel):
 
 
 class ExperimentConfig(BaseModel):
-    """Experiment configuration sent to workers."""
+    """Experiment configuration sent to workers.
+
+    These are the default values. Override by setting values in the server's
+    experiment_config.json file.
+    """
     task_id: str
     prompt_id: int
     model_name: str
     dataset: str = "asap"  # "asap" or "toefl11"
     max_epochs: int = 30
-    lr: float = 1e-6
-    lora_r: int = 4
-    lora_alpha: int = 16
-    max_seq_len: int = 256
+    # Training hyperparameters (can be overridden by server config)
+    lr: float = 1e-5
+    lora_r: int = 16
+    lora_alpha: int = 32
+    max_seq_len: int = 2048
     batch_size: int = 1
-    grad_accum_steps: int = 8
+    grad_accum_steps: int = 4
     seed: int = 42
     dev_M: int = 5
     dev_seed: int = 42

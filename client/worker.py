@@ -105,7 +105,7 @@ def run_experiment_for_task(
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel, LoraConfig, get_peft_model, TaskType
 
-    from config import ExperimentConfig, create_default_config, ASAP_SCORE_RANGES, TOEFL11_SCORE_RANGES, ContinualPretrainingConfig
+    from config import ExperimentConfig, create_default_config, ASAP_SCORE_RANGES, TOEFL11_SCORE_RANGES
     from data.data_loader import load_asap_for_experiment
     from models.scorer import ZeroShotScorer
     from models.logit_extractor import create_logit_extractor
@@ -129,22 +129,21 @@ def run_experiment_for_task(
     max_epochs = config.get("max_epochs", 30)
     seed = config.get("seed", 42)
 
-    # Create experiment config (uses defaults from ContinualPretrainingConfig)
+    # Create experiment config (all values come from server)
     exp_config = create_default_config(prompt_id, model_name)
-    exp_config.data.dataset = dataset  # Set dataset type
+    exp_config.data.dataset = dataset
     exp_config.data.data_path = str(data_path)
     exp_config.cpt.max_epochs = max_epochs
     exp_config.seed = seed
-    # Use defaults from ContinualPretrainingConfig, allow server override
-    default_cpt = ContinualPretrainingConfig()
-    exp_config.cpt.lr = config.get("lr", default_cpt.lr)
-    exp_config.cpt.lora_r = config.get("lora_r", default_cpt.lora_r)
-    exp_config.cpt.lora_alpha = config.get("lora_alpha", default_cpt.lora_alpha)
-    exp_config.cpt.max_seq_len = config.get("max_seq_len", default_cpt.max_seq_len)
-    exp_config.cpt.batch_size = config.get("batch_size", default_cpt.batch_size)
-    exp_config.cpt.grad_accum_steps = config.get("grad_accum_steps", default_cpt.grad_accum_steps)
+    # Use values from server config (server provides all hyperparameters)
+    exp_config.cpt.lr = config["lr"]
+    exp_config.cpt.lora_r = config["lora_r"]
+    exp_config.cpt.lora_alpha = config["lora_alpha"]
+    exp_config.cpt.max_seq_len = config["max_seq_len"]
+    exp_config.cpt.batch_size = config["batch_size"]
+    exp_config.cpt.grad_accum_steps = config["grad_accum_steps"]
 
-    logger.info(f"Training config: lr={exp_config.cpt.lr}, grad_accum={exp_config.cpt.grad_accum_steps}, lora_r={exp_config.cpt.lora_r}")
+    logger.info(f"Training config from server: lr={exp_config.cpt.lr}, lora_r={exp_config.cpt.lora_r}, lora_alpha={exp_config.cpt.lora_alpha}, grad_accum={exp_config.cpt.grad_accum_steps}")
 
     set_seed(seed)
 
