@@ -101,3 +101,5 @@ class ExperimentConfig(BaseModel):
     seed: int = 42
     dev_M: int = 5
     dev_seed: int = 42
+    # Training text format options
+    include_output_format: bool = False  # Add scoring output format after essay

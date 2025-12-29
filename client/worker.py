@@ -142,8 +142,9 @@ def run_experiment_for_task(
     exp_config.cpt.max_seq_len = config["max_seq_len"]
     exp_config.cpt.batch_size = config["batch_size"]
     exp_config.cpt.grad_accum_steps = config["grad_accum_steps"]
+    include_output_format = config.get("include_output_format", False)
 
-    logger.info(f"Training config from server: lr={exp_config.cpt.lr}, lora_r={exp_config.cpt.lora_r}, lora_alpha={exp_config.cpt.lora_alpha}, grad_accum={exp_config.cpt.grad_accum_steps}")
+    logger.info(f"Training config from server: lr={exp_config.cpt.lr}, lora_r={exp_config.cpt.lora_r}, lora_alpha={exp_config.cpt.lora_alpha}, grad_accum={exp_config.cpt.grad_accum_steps}, include_output_format={include_output_format}")
 
     set_seed(seed)
 
@@ -384,6 +385,12 @@ def run_experiment_for_task(
             )
 
         essay_texts = full_split.get_texts()
+
+        # Add scoring output format suffix if enabled
+        if include_output_format:
+            output_format_suffix = "\n\n[Output Format]\nThe score of this essay:"
+            essay_texts = [text + output_format_suffix for text in essay_texts]
+            logger.info(f"Added output format suffix to {len(essay_texts)} training texts")
 
         # Train and evaluate each epoch
         for epoch in range(start_epoch, max_epochs + 1):

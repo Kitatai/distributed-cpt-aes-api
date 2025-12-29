@@ -430,6 +430,7 @@ async def get_task_config(task_id: str):
         seed=exp_config.get("seed", 42),
         dev_M=exp_config.get("dev_M", 5),
         dev_seed=exp_config.get("dev_seed", 42),
+        include_output_format=exp_config.get("include_output_format", False),
     )
 
 
@@ -884,6 +885,7 @@ class ExperimentConfigUpdate(BaseModel):
     seed: Optional[int] = None
     dev_M: Optional[int] = None
     dev_seed: Optional[int] = None
+    include_output_format: Optional[bool] = None  # Add scoring output format after essay
 
 
 @app.put("/config")
