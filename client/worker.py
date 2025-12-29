@@ -196,10 +196,8 @@ def run_experiment_for_task(
     )
 
     # Prepare model for k-bit training (required for LoRA with quantized models)
-    model = prepare_model_for_kbit_training(model)
-
-    if exp_config.cpt.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
+    # Disable gradient_checkpointing to keep use_cache=True for faster training
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
 
     torch.backends.cudnn.benchmark = True
 
