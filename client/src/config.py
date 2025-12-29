@@ -125,7 +125,7 @@ class ContinualPretrainingConfig:
     method: str = "lora"
     lr: float = 1e-5
     max_epochs: int = 30
-    lora_r: int = 4
+    lora_r: int = 16
     lora_alpha: int = 16
     target_modules: List[str] = field(
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"]
