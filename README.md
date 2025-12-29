@@ -190,15 +190,44 @@ curl -X POST "http://localhost:8000/tasks/prompt1_llama/reset"
 
 ## 設定変更
 
-`client/src/config.py` で以下を調整できます：
+サーバー側の `server/data/experiment_config.json` で実験設定を管理します：
+
+```json
+{
+  "lr": 1e-5,
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "max_seq_len": 2048,
+  "batch_size": 1,
+  "grad_accum_steps": 4,
+  "max_epochs": 30,
+  "seed": 42
+}
+```
+
+### API経由で設定変更
+
+```bash
+# 現在の設定を確認
+curl http://localhost:8000/config
+
+# 設定を変更（例: lora_r を 8 に変更）
+curl -X PUT http://localhost:8000/config \
+  -H "Content-Type: application/json" \
+  -d '{"lora_r": 8}'
+```
+
+設定変更はサーバー再起動不要で、次のタスク開始時に反映されます。
 
 | 設定 | デフォルト | 説明 |
 |------|-----------|------|
+| `lr` | 1e-5 | 学習率 |
+| `lora_r` | 16 | LoRAのランク |
+| `lora_alpha` | 32 | LoRAのalpha |
 | `max_seq_len` | 2048 | 最大シーケンス長 |
 | `batch_size` | 1 | バッチサイズ |
-| `grad_accum_steps` | 1 | 勾配累積ステップ |
-| `gradient_checkpointing` | False | メモリ節約（有効にすると遅くなる） |
-| `logit_extraction.enabled` | False | 期待値計算（無効で高速化） |
+| `grad_accum_steps` | 4 | 勾配累積ステップ |
+| `max_epochs` | 30 | 最大エポック数 |
 
 ## トラブルシューティング
 
@@ -214,9 +243,10 @@ sudo ufw allow 8000
 
 ### GPU メモリエラー
 
-`client/src/config.py` で以下を調整：
-- `max_seq_len` を下げる（512, 256など）
-- `gradient_checkpointing = True` に変更
+サーバーの設定で以下を調整：
+```bash
+curl -X PUT http://localhost:8000/config -H "Content-Type: application/json" -d '{"max_seq_len": 512}'
+```
 
 ### Hugging Face認証エラー
 
