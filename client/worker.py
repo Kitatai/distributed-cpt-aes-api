@@ -102,8 +102,8 @@ def run_experiment_for_task(
         Experiment summary dict
     """
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    from peft import PeftModel, LoraConfig, get_peft_model, TaskType
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from peft import PeftModel, LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 
     from config import ExperimentConfig, create_default_config, ASAP_SCORE_RANGES, TOEFL11_SCORE_RANGES
     from data.data_loader import load_asap_for_experiment
@@ -175,30 +175,28 @@ def run_experiment_for_task(
     last_results_epoch = client.get_last_results(task_id)
     logger.info(f"Last completed epoch on server: {last_results_epoch}")
 
-    # Load model
-    logger.info(f"Loading model: {model_name}")
-    dtype = torch.bfloat16
+    # Load model with 8-bit quantization
+    logger.info(f"Loading model: {model_name} (8-bit quantization)")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Try Flash Attention
-    attn_impl = None
-    try:
-        import flash_attn
-        attn_impl = "flash_attention_2"
-        logger.info("Flash Attention 2 enabled")
-    except ImportError:
-        logger.info("Flash Attention not available")
+    # 8-bit quantization config
+    quantization_config = BitsAndBytesConfig(
+        load_in_8bit=True,
+        llm_int8_threshold=6.0,
+    )
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=dtype,
+        quantization_config=quantization_config,
         device_map="cuda",
         trust_remote_code=True,
-        attn_implementation=attn_impl,
     )
+
+    # Prepare model for k-bit training (required for LoRA with quantized models)
+    model = prepare_model_for_kbit_training(model)
 
     if exp_config.cpt.gradient_checkpointing:
         model.gradient_checkpointing_enable()
