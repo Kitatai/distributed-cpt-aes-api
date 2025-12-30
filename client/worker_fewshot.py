@@ -114,7 +114,12 @@ def run_fewshot_experiment(
 
     # Prepare evaluation essays (exclude all sample_ids)
     eval_df = prompt_df[~prompt_df['essay_id'].isin(sample_ids)]
-    logger.info(f"Evaluation essays: {len(eval_df)}")
+
+    # Optional: sample a fraction of evaluation essays for quick testing
+    eval_sample_ratio = task_config.get("eval_sample_ratio", 1.0)
+    if eval_sample_ratio < 1.0:
+        eval_df = eval_df.sample(frac=eval_sample_ratio, random_state=42)
+    logger.info(f"Evaluation essays: {len(eval_df)} (ratio: {eval_sample_ratio})")
 
     # Load tokenizer
     logger.info(f"Loading tokenizer: {model_name}")
