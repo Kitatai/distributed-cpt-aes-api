@@ -348,6 +348,65 @@ def main():
               f"{row['best_spearman_mean']:>8.4f}±{row['best_spearman_std']:.2f} "
               f"{row['improvement_spearman']:>+8.4f}")
 
+    # Model-wise aggregation (average across prompts)
+    print(f"\n{'='*60}")
+    print("MODEL-WISE AVERAGE (across prompts)")
+    print(f"{'='*60}")
+    print(f"{'Model':<12} {'E0 QWK':>8} {'Best QWK':>10} {'Δ QWK':>8} {'E0 Spear':>9} {'Best Spear':>11} {'Δ Spear':>8}")
+    print("-" * 70)
+
+    model_aggregates = {}
+    for model in models:
+        model_rows = [r for r in summary if r['model'] == model]
+        if model_rows:
+            model_aggregates[model] = {
+                'epoch0_qwk': np.mean([r['epoch0_qwk'] for r in model_rows]),
+                'best_qwk_mean': np.mean([r['best_qwk_mean'] for r in model_rows]),
+                'improvement_qwk': np.mean([r['improvement_qwk'] for r in model_rows]),
+                'epoch0_spearman': np.mean([r['epoch0_spearman'] for r in model_rows]),
+                'best_spearman_mean': np.mean([r['best_spearman_mean'] for r in model_rows]),
+                'improvement_spearman': np.mean([r['improvement_spearman'] for r in model_rows]),
+                'n_prompts': len(model_rows),
+            }
+            agg = model_aggregates[model]
+            print(f"{model:<12} "
+                  f"{agg['epoch0_qwk']:>8.4f} "
+                  f"{agg['best_qwk_mean']:>10.4f} "
+                  f"{agg['improvement_qwk']:>+8.4f} "
+                  f"{agg['epoch0_spearman']:>9.4f} "
+                  f"{agg['best_spearman_mean']:>11.4f} "
+                  f"{agg['improvement_spearman']:>+8.4f}")
+
+    # Overall average (all models)
+    print("-" * 70)
+    if summary:
+        overall = {
+            'epoch0_qwk': np.mean([r['epoch0_qwk'] for r in summary]),
+            'best_qwk_mean': np.mean([r['best_qwk_mean'] for r in summary]),
+            'improvement_qwk': np.mean([r['improvement_qwk'] for r in summary]),
+            'epoch0_spearman': np.mean([r['epoch0_spearman'] for r in summary]),
+            'best_spearman_mean': np.mean([r['best_spearman_mean'] for r in summary]),
+            'improvement_spearman': np.mean([r['improvement_spearman'] for r in summary]),
+        }
+        print(f"{'ALL':<12} "
+              f"{overall['epoch0_qwk']:>8.4f} "
+              f"{overall['best_qwk_mean']:>10.4f} "
+              f"{overall['improvement_qwk']:>+8.4f} "
+              f"{overall['epoch0_spearman']:>9.4f} "
+              f"{overall['best_spearman_mean']:>11.4f} "
+              f"{overall['improvement_spearman']:>+8.4f}")
+
+    # Add model aggregates to output
+    output['model_averages'] = model_aggregates
+    output['overall_average'] = overall if summary else {}
+
+    # Re-save with aggregates
+    with open(output_path, 'w') as f:
+        json.dump(output, f, indent=2)
+
+    print(f"\n{'='*60}")
+    print(f"Results (with aggregates) saved to {output_path}")
+
 
 if __name__ == "__main__":
     main()
