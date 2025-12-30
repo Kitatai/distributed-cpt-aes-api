@@ -98,6 +98,8 @@ class FewShotScoringPromptBuilder(ScoringPromptBuilder):
             return ""
 
         lines = ["[Examples]"]
+        lines.append("The following are example essays with their correct scores. Use these as reference for scoring the target essay.")
+        lines.append("")
         for example in self.examples:
             lines.append(f"Essay: {example.essay_text}")
             lines.append(f"Score: {example.score}")
@@ -129,7 +131,7 @@ You will score a student essay for the following writing prompt.
 [Allowed Score Range]
 An integer score in [{self.y_min}, {self.y_max}] (inclusive).
 
-[Essay]
+[Target Essay to Score]
 {essay_text}
 
 [Output Format]
