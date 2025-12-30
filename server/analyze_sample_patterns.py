@@ -94,7 +94,7 @@ def analyze_pattern(
         mse = calculate_mse(y_true, y_pred)
         epoch_mses[epoch] = mse
 
-        if mse <= best_mse:
+        if mse < best_mse:
             best_mse = mse
             best_epoch = epoch
 
