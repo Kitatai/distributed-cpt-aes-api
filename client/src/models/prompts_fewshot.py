@@ -98,12 +98,9 @@ class FewShotScoringPromptBuilder(ScoringPromptBuilder):
             return ""
 
         lines = ["[Examples]"]
-        lines.append("Here are some example essays with their scores:\n")
-
-        for i, example in enumerate(self.examples, 1):
-            lines.append(f"--- Example {i} ---")
-            lines.append(f"Essay:\n{example.essay_text}")
-            lines.append(f"\n{self.output_prefix} {example.score}")
+        for example in self.examples:
+            lines.append(f"Essay: {example.essay_text}")
+            lines.append(f"Score: {example.score}")
             lines.append("")  # Empty line between examples
 
         return "\n".join(lines)
@@ -121,7 +118,6 @@ class FewShotScoringPromptBuilder(ScoringPromptBuilder):
         if examples_section:
             message = f"""[Task]
 You will score a student essay for the following writing prompt.
-Study the examples carefully and score the target essay using the same criteria.
 
 [Writing Prompt]
 {self.prompt_text}
@@ -129,12 +125,11 @@ Study the examples carefully and score the target essay using the same criteria.
 [Scoring Rubric]
 {self.rubric_text}
 
+{examples_section}
 [Allowed Score Range]
 An integer score in [{self.y_min}, {self.y_max}] (inclusive).
 
-{examples_section}
-
-[Target Essay to Score]
+[Essay]
 {essay_text}
 
 [Output Format]

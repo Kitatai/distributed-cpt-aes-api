@@ -94,7 +94,7 @@ def analyze_pattern(
         mse = calculate_mse(y_true, y_pred)
         epoch_mses[epoch] = mse
 
-        if mse < best_mse:
+        if mse <= best_mse:
             best_mse = mse
             best_epoch = epoch
 
@@ -247,6 +247,12 @@ def main():
         default=None,
         help="Output file path (default: data/analysis_results.json)",
     )
+    parser.add_argument(
+        "--patterns",
+        type=str,
+        default=None,
+        help="Sample patterns file path (default: data/sample_patterns.json)",
+    )
 
     args = parser.parse_args()
 
@@ -256,7 +262,11 @@ def main():
     # Paths
     script_dir = Path(__file__).parent
     results_dir = script_dir / "data" / "results"
-    patterns_path = script_dir / "data" / "sample_patterns.json"
+
+    if args.patterns:
+        patterns_path = Path(args.patterns)
+    else:
+        patterns_path = script_dir / "data" / "sample_patterns.json"
 
     if args.output:
         output_path = Path(args.output)
