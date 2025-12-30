@@ -110,9 +110,7 @@ def run_fewshot_experiment(
         )
         for _, row in example_essays.iterrows()
     ]
-    # Sort by score ascending
-    fewshot_examples.sort(key=lambda x: x.score)
-    logger.info(f"Prepared {len(fewshot_examples)} few-shot examples (sorted by score ascending)")
+    logger.info(f"Prepared {len(fewshot_examples)} few-shot examples")
 
     # Prepare evaluation essays (exclude all sample_ids)
     eval_df = prompt_df[~prompt_df['essay_id'].isin(sample_ids)]
