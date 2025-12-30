@@ -125,10 +125,10 @@ You will score a student essay for the following writing prompt.
 [Writing Prompt]
 {self.prompt_text}
 
+{examples_section}
 [Scoring Rubric]
 {self.rubric_text}
 
-{examples_section}
 [Allowed Score Range]
 An integer score in [{self.y_min}, {self.y_max}] (inclusive).
 
