@@ -98,11 +98,12 @@ class FewShotScoringPromptBuilder(ScoringPromptBuilder):
             return ""
 
         lines = ["[Examples]"]
-        lines.append("The following are example essays with their correct scores. Use these as reference for scoring the target essay.")
+        lines.append("The following are example essays with their correct scores.")
         lines.append("")
-        for example in self.examples:
+        for i, example in enumerate(self.examples, 1):
+            lines.append(f"--- Example {i} ---")
             lines.append(f"Essay: {example.essay_text}")
-            lines.append(f"Score: {example.score}")
+            lines.append(f"{self.output_prefix} {example.score}")
             lines.append("")  # Empty line between examples
 
         return "\n".join(lines)
