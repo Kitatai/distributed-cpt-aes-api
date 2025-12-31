@@ -219,9 +219,23 @@ class SimpleLoRATrainer:
         num_steps = 0
         self.optimizer.zero_grad()
 
+        # Setup cosine annealing within epoch (lr -> 0)
+        total_steps = len(dataloader)
+        import math
+
+        def get_lr(step):
+            """Cosine annealing: lr at step 0, 0 at final step."""
+            progress = step / max(total_steps - 1, 1)
+            return self.config.lr * (1 + math.cos(math.pi * progress)) / 2
+
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch}")
 
         for step, batch in enumerate(progress_bar):
+            # Update learning rate (cosine annealing within epoch)
+            current_lr = get_lr(step)
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = current_lr
+
             # Move to device
             input_ids = batch["input_ids"].to(self.model.device)
             attention_mask = batch["attention_mask"].to(self.model.device)
@@ -246,7 +260,7 @@ class SimpleLoRATrainer:
                 self.optimizer.zero_grad()
 
             # Update progress bar
-            progress_bar.set_postfix({"loss": f"{outputs.loss.item():.4f}"})
+            progress_bar.set_postfix({"loss": f"{outputs.loss.item():.4f}", "lr": f"{current_lr:.2e}"})
 
         # Final optimizer step if needed
         if num_steps % self.config.grad_accum_steps != 0:
