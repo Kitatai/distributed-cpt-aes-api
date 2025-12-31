@@ -110,3 +110,4 @@ class ExperimentConfig(BaseModel):
     training_text_mode: str = "essay_only"
     # Memory optimization
     gradient_checkpointing: bool = False
+    load_in_8bit: bool = False  # 8-bit quantization for memory savings

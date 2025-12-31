@@ -44,6 +44,11 @@ class EssayLMDataset(Dataset):
         self.encodings = []
         logger.info(f"Tokenizing {len(texts)} texts...")
 
+        # Use left truncation to preserve essay text (which comes at the end for scoring prompts)
+        # Save original truncation side to restore later
+        original_truncation_side = getattr(tokenizer, 'truncation_side', 'right')
+        tokenizer.truncation_side = 'left'
+
         for text in tqdm(texts, desc="Tokenizing"):
             enc = tokenizer(
                 text,
@@ -56,6 +61,9 @@ class EssayLMDataset(Dataset):
                 "input_ids": enc["input_ids"].squeeze(0),
                 "attention_mask": enc["attention_mask"].squeeze(0),
             })
+
+        # Restore original truncation side
+        tokenizer.truncation_side = original_truncation_side
 
         logger.info(f"Tokenization complete: {len(self.encodings)} examples")
 

@@ -195,12 +195,28 @@ def run_experiment_for_task(
     except ImportError:
         logger.info("Flash Attention not available")
 
+    # Check for 8-bit quantization
+    load_in_8bit = config.get("load_in_8bit", False)
+    quantization_config = None
+    if load_in_8bit:
+        try:
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_threshold=6.0,
+            )
+            logger.info("8-bit quantization enabled")
+        except ImportError:
+            logger.warning("bitsandbytes not available, using bfloat16")
+            load_in_8bit = False
+
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
         device_map="cuda",
         trust_remote_code=True,
         attn_implementation=attn_impl,
+        quantization_config=quantization_config,
     )
 
     if exp_config.cpt.gradient_checkpointing:
