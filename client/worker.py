@@ -38,6 +38,7 @@ from data.toefl11_loader import TOEFL11DataLoader, load_toefl11_for_experiment
 # Maps instruct model names to their corresponding base models
 BASE_MODEL_MAPPING = {
     "meta-llama/Meta-Llama-3.1-8B-Instruct": "meta-llama/Llama-3.1-8B",
+    "meta-llama/Llama-3.2-3B-Instruct": "meta-llama/Llama-3.2-3B",
 }
 
 
