@@ -219,7 +219,12 @@ def run_experiment_for_task(
         quantization_config=quantization_config,
     )
 
-    if exp_config.cpt.gradient_checkpointing:
+    # Prepare model for k-bit training (required for 8-bit quantization)
+    if load_in_8bit:
+        from peft import prepare_model_for_kbit_training
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=exp_config.cpt.gradient_checkpointing)
+        logger.info("Model prepared for 8-bit training")
+    elif exp_config.cpt.gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
     torch.backends.cudnn.benchmark = True
