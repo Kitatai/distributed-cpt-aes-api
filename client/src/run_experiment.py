@@ -33,7 +33,7 @@ from data.data_loader import (
 )
 from models.scorer import ZeroShotScorer, load_scorer
 from models.logit_extractor import create_logit_extractor
-from models.prompts import create_prompt_builder
+from models.prompts import create_prompt_builder, create_training_prompt_builder, create_full_prompt_training_builder
 from training.simple_trainer import SimpleLoRATrainer, SimpleTrainerConfig
 from evaluation.metrics import (
     evaluate_predictions,
@@ -660,12 +660,32 @@ def run_experiment(config: ExperimentConfig):
                 seed=config.seed,  # For reproducible shuffling
             )
 
+            # Create training prompt builder if using prompt-based training
+            training_prompt_builder = None
+            if config.cpt.training_text_mode == "scoring_prompt_short":
+                logger.info("Using scoring_prompt_short mode for training")
+                training_prompt_builder = create_training_prompt_builder(
+                    prompt_id=config.data.prompt_id,
+                    y_min=y_min,
+                    y_max=y_max,
+                )
+            elif config.cpt.training_text_mode == "scoring_prompt_full":
+                logger.info("Using scoring_prompt_full mode for training")
+                training_prompt_builder = create_full_prompt_training_builder(
+                    prompt_id=config.data.prompt_id,
+                    y_min=y_min,
+                    y_max=y_max,
+                )
+            else:
+                logger.info("Using essay_only mode for training")
+
             # Initialize trainer with the SAME model
             trainer = SimpleLoRATrainer(
                 model=model,
                 tokenizer=tokenizer,
                 config=trainer_config,
                 output_dir=str(checkpoint_dir),
+                training_prompt_builder=training_prompt_builder,
             )
 
             # Resume from checkpoint or start fresh

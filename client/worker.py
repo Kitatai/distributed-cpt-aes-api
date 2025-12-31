@@ -109,6 +109,7 @@ def run_experiment_for_task(
     from data.data_loader import load_asap_for_experiment
     from models.scorer import ZeroShotScorer
     from models.logit_extractor import create_logit_extractor
+    from models.prompts import create_training_prompt_builder, create_full_prompt_training_builder
     from training.simple_trainer import SimpleLoRATrainer, SimpleTrainerConfig
     from evaluation.metrics import evaluate_scoring_results, select_best_epoch, EvaluationResult
     from evaluation.visualize import plot_metrics_progress
@@ -142,8 +143,10 @@ def run_experiment_for_task(
     exp_config.cpt.max_seq_len = config["max_seq_len"]
     exp_config.cpt.batch_size = config["batch_size"]
     exp_config.cpt.grad_accum_steps = config["grad_accum_steps"]
+    exp_config.cpt.training_text_mode = config.get("training_text_mode", "essay_only")
+    exp_config.cpt.gradient_checkpointing = config.get("gradient_checkpointing", False)
 
-    logger.info(f"Training config from server: lr={exp_config.cpt.lr}, lora_r={exp_config.cpt.lora_r}, lora_alpha={exp_config.cpt.lora_alpha}, grad_accum={exp_config.cpt.grad_accum_steps}")
+    logger.info(f"Training config from server: lr={exp_config.cpt.lr}, lora_r={exp_config.cpt.lora_r}, lora_alpha={exp_config.cpt.lora_alpha}, grad_accum={exp_config.cpt.grad_accum_steps}, training_text_mode={exp_config.cpt.training_text_mode}, gradient_checkpointing={exp_config.cpt.gradient_checkpointing}")
 
     set_seed(seed)
 
@@ -339,11 +342,31 @@ def run_experiment_for_task(
             seed=seed,
         )
 
+        # Create training prompt builder if using prompt-based training
+        training_prompt_builder = None
+        if exp_config.cpt.training_text_mode == "scoring_prompt_short":
+            logger.info("Using scoring_prompt_short mode for training")
+            training_prompt_builder = create_training_prompt_builder(
+                prompt_id=prompt_id,
+                y_min=y_min,
+                y_max=y_max,
+            )
+        elif exp_config.cpt.training_text_mode == "scoring_prompt_full":
+            logger.info("Using scoring_prompt_full mode for training")
+            training_prompt_builder = create_full_prompt_training_builder(
+                prompt_id=prompt_id,
+                y_min=y_min,
+                y_max=y_max,
+            )
+        else:
+            logger.info("Using essay_only mode for training")
+
         trainer = SimpleLoRATrainer(
             model=model,
             tokenizer=tokenizer,
             config=trainer_config,
             output_dir=str(checkpoint_dir),
+            training_prompt_builder=training_prompt_builder,
         )
 
         # Resume from checkpoint if needed

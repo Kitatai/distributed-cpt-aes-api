@@ -103,3 +103,10 @@ class ExperimentConfig(BaseModel):
     dev_seed: int = 42
     # Training text format options
     include_output_format: bool = False  # Add scoring output format after essay
+    # Training text mode:
+    #   "essay_only" - Train on raw essay text only (original behavior)
+    #   "scoring_prompt_short" - Train on shortened scoring prompt (task + score range + essay + output format)
+    #   "scoring_prompt_full" - Train on full scoring prompt (with writing prompt + rubric)
+    training_text_mode: str = "essay_only"
+    # Memory optimization
+    gradient_checkpointing: bool = False

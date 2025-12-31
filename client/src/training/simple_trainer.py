@@ -116,12 +116,14 @@ class SimpleLoRATrainer:
         tokenizer,
         config: SimpleTrainerConfig,
         output_dir: str,
+        training_prompt_builder=None,
     ):
         self.base_model = model
         self.tokenizer = tokenizer
         self.config = config
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.training_prompt_builder = training_prompt_builder
 
         self.model = None
         self.optimizer = None
@@ -175,9 +177,19 @@ class SimpleLoRATrainer:
 
         self.model.train()
 
+        # Transform texts if training_prompt_builder is provided
+        if self.training_prompt_builder is not None:
+            logger.info("Transforming essay texts to training prompts...")
+            training_texts = [
+                self.training_prompt_builder.build_training_text(text, self.tokenizer)
+                for text in texts
+            ]
+        else:
+            training_texts = texts
+
         # Create dataset and dataloader
         dataset = EssayLMDataset(
-            texts,
+            training_texts,
             self.tokenizer,
             max_length=self.config.max_seq_len
         )

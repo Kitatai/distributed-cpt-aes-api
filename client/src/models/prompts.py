@@ -345,3 +345,182 @@ def get_prompt_info(prompt_id: int) -> Dict:
         'has_rubric': bool(ASAP_RUBRICS.get(prompt_id)),
         'score_range': score_range,
     }
+
+
+class TrainingPromptBuilder:
+    """
+    Builder for training prompts used in continual pre-training.
+
+    Creates shortened prompts without Writing Prompt and Scoring Rubric sections,
+    focusing on the scoring task structure that the model will use during inference.
+    """
+
+    def __init__(
+        self,
+        y_min: int,
+        y_max: int,
+        output_prefix: str = "The score of this essay:",
+    ):
+        """
+        Initialize the training prompt builder.
+
+        Args:
+            y_min: Minimum allowed score
+            y_max: Maximum allowed score
+            output_prefix: Prefix for assistant output
+        """
+        self.y_min = y_min
+        self.y_max = y_max
+        self.output_prefix = output_prefix
+
+    def build_user_message(self, essay_text: str) -> str:
+        """
+        Build the shortened user message for training.
+
+        Args:
+            essay_text: The essay text
+        """
+        return f"""[Task]
+You will score a student essay for the following writing prompt.
+
+[Allowed Score Range]
+An integer score in [{self.y_min}, {self.y_max}] (inclusive).
+
+[Essay]
+{essay_text}
+
+[Output Format]
+{self.output_prefix}<INTEGER>"""
+
+    def build_training_text(self, essay_text: str, tokenizer=None) -> str:
+        """
+        Build the full training text including chat template if tokenizer is provided.
+
+        Args:
+            essay_text: The essay text
+            tokenizer: Optional tokenizer for applying chat template
+
+        Returns:
+            Training text (with chat template if tokenizer provided)
+        """
+        system_message = f"""You are a strict automated essay scoring engine.
+Output ONLY the integer score, then a newline.
+Do not output any other words, explanations, or punctuation.
+The integer MUST be within [{self.y_min}, {self.y_max}]."""
+
+        user_message = self.build_user_message(essay_text)
+
+        if tokenizer is not None:
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message},
+            ]
+            # Apply chat template without generation prompt (training text only)
+            return tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+        else:
+            # Return raw format without chat template
+            return f"{system_message}\n\n{user_message}"
+
+
+def create_training_prompt_builder(
+    prompt_id: int,
+    y_min: int,
+    y_max: int,
+    output_prefix: str = "The score of this essay:",
+) -> TrainingPromptBuilder:
+    """
+    Create a training prompt builder for a specific prompt.
+
+    Args:
+        prompt_id: Prompt ID (1-8)
+        y_min: Minimum score
+        y_max: Maximum score
+        output_prefix: Output prefix for score
+
+    Returns:
+        TrainingPromptBuilder configured for the prompt
+    """
+    return TrainingPromptBuilder(
+        y_min=y_min,
+        y_max=y_max,
+        output_prefix=output_prefix,
+    )
+
+
+class FullPromptTrainingBuilder:
+    """
+    Builder for full scoring prompts used in continual pre-training.
+
+    Uses the same format as inference (with Writing Prompt and Scoring Rubric).
+    """
+
+    def __init__(
+        self,
+        prompt_id: int,
+        y_min: int,
+        y_max: int,
+    ):
+        """
+        Initialize the full prompt training builder.
+
+        Args:
+            prompt_id: Prompt ID (1-8)
+            y_min: Minimum allowed score
+            y_max: Maximum allowed score
+        """
+        self.prompt_id = prompt_id
+        self.y_min = y_min
+        self.y_max = y_max
+        self.scoring_builder = create_prompt_builder(prompt_id, y_min, y_max)
+
+    def build_training_text(self, essay_text: str, tokenizer=None) -> str:
+        """
+        Build the full training text including chat template if tokenizer is provided.
+
+        Args:
+            essay_text: The essay text
+            tokenizer: Optional tokenizer for applying chat template
+
+        Returns:
+            Training text (with chat template if tokenizer provided)
+        """
+        # Get messages from scoring builder (without assistant prefill)
+        messages = self.scoring_builder.to_messages(essay_text, use_prefill=False)
+
+        if tokenizer is not None:
+            # Apply chat template without generation prompt (training text only)
+            return tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+        else:
+            # Return raw format without chat template
+            return "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+
+
+def create_full_prompt_training_builder(
+    prompt_id: int,
+    y_min: int,
+    y_max: int,
+) -> FullPromptTrainingBuilder:
+    """
+    Create a full prompt training builder for a specific prompt.
+
+    Args:
+        prompt_id: Prompt ID (1-8)
+        y_min: Minimum score
+        y_max: Maximum score
+
+    Returns:
+        FullPromptTrainingBuilder configured for the prompt
+    """
+    return FullPromptTrainingBuilder(
+        prompt_id=prompt_id,
+        y_min=y_min,
+        y_max=y_max,
+    )

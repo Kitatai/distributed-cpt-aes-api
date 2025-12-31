@@ -137,6 +137,10 @@ class ContinualPretrainingConfig:
     weight_decay: float = 0.0
     save_every_epoch: bool = True
     gradient_checkpointing: bool = False  # Enable to reduce memory usage
+    # Training text mode:
+    #   "essay_only" - Train on raw essay text only (original behavior)
+    #   "scoring_prompt_short" - Train on shortened scoring prompt (task + score range + essay + output format)
+    training_text_mode: str = "essay_only"
 
 
 @dataclass
@@ -271,6 +275,7 @@ class ExperimentConfig:
                 'lora_r': self.cpt.lora_r,
                 'lora_alpha': self.cpt.lora_alpha,
                 'target_modules': self.cpt.target_modules,
+                'training_text_mode': self.cpt.training_text_mode,
             },
             'selection': {
                 'metric_for_e_star': self.selection.metric_for_e_star,

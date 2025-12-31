@@ -431,6 +431,8 @@ async def get_task_config(task_id: str):
         dev_M=exp_config.get("dev_M", 5),
         dev_seed=exp_config.get("dev_seed", 42),
         include_output_format=exp_config.get("include_output_format", False),
+        training_text_mode=exp_config.get("training_text_mode", "essay_only"),
+        gradient_checkpointing=exp_config.get("gradient_checkpointing", False),
     )
 
 
@@ -886,6 +888,8 @@ class ExperimentConfigUpdate(BaseModel):
     dev_M: Optional[int] = None
     dev_seed: Optional[int] = None
     include_output_format: Optional[bool] = None  # Add scoring output format after essay
+    training_text_mode: Optional[str] = None  # "essay_only", "scoring_prompt_short", or "scoring_prompt_full"
+    gradient_checkpointing: Optional[bool] = None  # Enable to reduce memory usage
 
 
 @app.put("/config")
