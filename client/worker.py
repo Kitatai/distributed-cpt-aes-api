@@ -120,15 +120,16 @@ def load_model_and_tokenizer(
     return model, tokenizer
 
 
-def unload_model(model):
-    """Unload a model and free GPU memory."""
+def unload_model_and_clear_gpu():
+    """Clear GPU memory aggressively."""
     import torch
     import gc
 
-    del model
+    gc.collect()
     torch.cuda.empty_cache()
     gc.collect()
-    logger.info("Model unloaded and GPU memory cleared")
+    torch.cuda.synchronize()
+    logger.info("GPU memory cleared")
 
 
 # Global state for graceful shutdown
@@ -441,8 +442,9 @@ def run_experiment_for_task(
 
         if use_base_training:
             # Unload instruct model
-            unload_model(scoring_model)
+            del scoring_model
             scoring_model = None
+            unload_model_and_clear_gpu()
     else:
         # Load existing epoch 0 results from server
         logger.info("Loading existing epoch 0 results from server...")
@@ -556,9 +558,10 @@ def run_experiment_for_task(
                 client.upload_checkpoint(task_id, epoch, adapter_path)
 
                 # Step 6: Unload base model
-                unload_model(base_model)
                 del trainer
+                del base_model
                 base_model = None
+                unload_model_and_clear_gpu()
 
                 # Step 7: Load instruct model with adapter for scoring
                 logger.info(f"Loading instruct model for scoring: {scoring_model_name}")
@@ -612,9 +615,11 @@ def run_experiment_for_task(
                 )
 
                 # Step 10: Unload instruct model
-                unload_model(instruct_model)
+                del instruct_model_with_adapter
+                del instruct_model
                 instruct_model = None
                 instruct_model_with_adapter = None
+                unload_model_and_clear_gpu()
 
         else:
             # ============================================
