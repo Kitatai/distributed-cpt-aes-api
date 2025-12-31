@@ -219,30 +219,37 @@ class SimpleLoRATrainer:
         num_steps = 0
         self.optimizer.zero_grad()
 
-        # Warmup + Linear Decay schedule (across all epochs)
-        # Warmup: epoch 1-5, lr increases 0 -> lr
-        # Decay: epoch 6-30, lr decreases lr -> 0
+        # Warmup + Linear Decay schedule (step-level across all epochs)
+        # Warmup: first 5 epochs worth of steps, lr increases 0 -> lr
+        # Decay: remaining 25 epochs worth of steps, lr decreases lr -> 0
         warmup_epochs = 5
         total_epochs = 30  # TODO: make configurable
+        steps_per_epoch = len(dataloader)
+        total_steps = total_epochs * steps_per_epoch
+        warmup_steps = warmup_epochs * steps_per_epoch
 
-        if epoch <= warmup_epochs:
-            # Warmup phase: linear increase
-            current_lr = self.config.lr * (epoch / warmup_epochs)
-        else:
-            # Decay phase: linear decrease
-            decay_epochs = total_epochs - warmup_epochs
-            progress = (epoch - warmup_epochs) / decay_epochs
-            current_lr = self.config.lr * (1 - progress)
+        def get_lr_for_step(global_step):
+            """Calculate LR based on global step (warmup + linear decay)."""
+            if global_step < warmup_steps:
+                # Warmup phase: linear increase 0 -> lr
+                return self.config.lr * (global_step / warmup_steps)
+            else:
+                # Decay phase: linear decrease lr -> 0
+                decay_steps = total_steps - warmup_steps
+                progress = (global_step - warmup_steps) / decay_steps
+                return self.config.lr * (1 - progress)
 
-        # Set learning rate for this epoch
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = current_lr
-
-        logger.info(f"Epoch {epoch} LR: {current_lr:.2e} (warmup={epoch <= warmup_epochs})")
+        # Calculate starting global step for this epoch
+        epoch_start_global_step = (epoch - 1) * steps_per_epoch
 
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch}")
 
         for step, batch in enumerate(progress_bar):
+            # Update learning rate based on global step
+            global_step = epoch_start_global_step + step
+            current_lr = get_lr_for_step(global_step)
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = current_lr
 
             # Move to device
             input_ids = batch["input_ids"].to(self.model.device)
@@ -268,7 +275,7 @@ class SimpleLoRATrainer:
                 self.optimizer.zero_grad()
 
             # Update progress bar
-            progress_bar.set_postfix({"loss": f"{outputs.loss.item():.4f}"})
+            progress_bar.set_postfix({"loss": f"{outputs.loss.item():.4f}", "lr": f"{current_lr:.2e}"})
 
         # Final optimizer step if needed
         if num_steps % self.config.grad_accum_steps != 0:
