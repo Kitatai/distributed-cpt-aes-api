@@ -441,9 +441,13 @@ def run_experiment_for_task(
         logger.info(f"Epoch 0: Spearman={full_m.get('spearman', 0):.4f}, QWK={full_m.get('qwk', 0):.4f}")
 
         if use_base_training:
-            # Unload instruct model
+            # Unload instruct model - clear all references
+            scorer.model = None
+            scorer.tokenizer = None
             del scoring_model
+            del tokenizer
             scoring_model = None
+            tokenizer = None
             unload_model_and_clear_gpu()
     else:
         # Load existing epoch 0 results from server
@@ -557,10 +561,12 @@ def run_experiment_for_task(
                 adapter_path = Path(train_result['adapter_path'])
                 client.upload_checkpoint(task_id, epoch, adapter_path)
 
-                # Step 6: Unload base model
+                # Step 6: Unload base model - clear all references
                 del trainer
                 del base_model
+                del tokenizer
                 base_model = None
+                tokenizer = None
                 unload_model_and_clear_gpu()
 
                 # Step 7: Load instruct model with adapter for scoring
@@ -614,11 +620,15 @@ def run_experiment_for_task(
                     max_epochs=max_epochs,
                 )
 
-                # Step 10: Unload instruct model
+                # Step 10: Unload instruct model - clear all references
+                scorer.model = None
+                scorer.tokenizer = None
                 del instruct_model_with_adapter
                 del instruct_model
+                del tokenizer
                 instruct_model = None
                 instruct_model_with_adapter = None
+                tokenizer = None
                 unload_model_and_clear_gpu()
 
         else:
