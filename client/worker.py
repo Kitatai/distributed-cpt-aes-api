@@ -39,6 +39,7 @@ from data.toefl11_loader import TOEFL11DataLoader, load_toefl11_for_experiment
 BASE_MODEL_MAPPING = {
     "meta-llama/Meta-Llama-3.1-8B-Instruct": "meta-llama/Llama-3.1-8B",
     "meta-llama/Llama-3.2-3B-Instruct": "meta-llama/Llama-3.2-3B",
+    "mistralai/Mistral-7B-Instruct-v0.3": "mistralai/Mistral-7B-v0.3",
 }
 
 
