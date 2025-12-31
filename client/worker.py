@@ -141,6 +141,7 @@ def run_experiment_for_task(
     exp_config.cpt.lora_r = config["lora_r"]
     exp_config.cpt.lora_alpha = config["lora_alpha"]
     exp_config.cpt.lora_dropout = config.get("lora_dropout", 0.05)
+    exp_config.cpt.weight_decay = config.get("weight_decay", 0.0)
     exp_config.cpt.max_seq_len = config["max_seq_len"]
     exp_config.cpt.batch_size = config["batch_size"]
     exp_config.cpt.grad_accum_steps = config["grad_accum_steps"]
@@ -357,6 +358,7 @@ def run_experiment_for_task(
             lora_r=exp_config.cpt.lora_r,
             lora_alpha=exp_config.cpt.lora_alpha,
             lora_dropout=exp_config.cpt.lora_dropout,
+            weight_decay=exp_config.cpt.weight_decay,
             target_modules=exp_config.cpt.target_modules,
             max_seq_len=exp_config.cpt.max_seq_len,
             batch_size=exp_config.cpt.batch_size,

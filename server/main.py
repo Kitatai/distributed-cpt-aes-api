@@ -425,6 +425,7 @@ async def get_task_config(task_id: str):
         lora_r=exp_config.get("lora_r", 16),
         lora_alpha=exp_config.get("lora_alpha", 32),
         lora_dropout=exp_config.get("lora_dropout", 0.05),
+        weight_decay=exp_config.get("weight_decay", 0.0),
         max_seq_len=exp_config.get("max_seq_len", 2048),
         batch_size=exp_config.get("batch_size", 1),
         grad_accum_steps=exp_config.get("grad_accum_steps", 4),
@@ -883,6 +884,7 @@ class ExperimentConfigUpdate(BaseModel):
     lora_r: Optional[int] = None
     lora_alpha: Optional[int] = None
     lora_dropout: Optional[float] = None
+    weight_decay: Optional[float] = None  # L2 regularization
     max_seq_len: Optional[int] = None
     batch_size: Optional[int] = None
     grad_accum_steps: Optional[int] = None

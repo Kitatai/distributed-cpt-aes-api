@@ -26,6 +26,7 @@ class SimpleTrainerConfig:
     lora_r: int = 4
     lora_alpha: int = 16
     lora_dropout: float = 0.0
+    weight_decay: float = 0.0  # L2 regularization
     target_modules: List[str] = None
     max_seq_len: int = 256
     batch_size: int = 1
@@ -160,6 +161,7 @@ class SimpleLoRATrainer:
         self.optimizer = AdamW(
             self.model.parameters(),
             lr=self.config.lr,
+            weight_decay=self.config.weight_decay,
         )
 
         self._lora_applied = True
