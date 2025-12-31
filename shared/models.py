@@ -95,6 +95,7 @@ class ExperimentConfig(BaseModel):
     lr: float = 1e-5
     lora_r: int = 16
     lora_alpha: int = 32
+    lora_dropout: float = 0.05
     max_seq_len: int = 2048
     batch_size: int = 1
     grad_accum_steps: int = 4
