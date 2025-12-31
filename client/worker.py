@@ -34,6 +34,103 @@ from api_client import APIClient
 from data.toefl11_loader import TOEFL11DataLoader, load_toefl11_for_experiment
 
 
+# Base model mapping for train_on_base_model experiment
+# Maps instruct model names to their corresponding base models
+BASE_MODEL_MAPPING = {
+    "meta-llama/Meta-Llama-3.1-8B-Instruct": "meta-llama/Llama-3.1-8B",
+}
+
+
+def get_base_model_name(instruct_model_name: str) -> str | None:
+    """Get base model name for an instruct model.
+
+    Returns None if no base model mapping exists (not supported for this model).
+    """
+    return BASE_MODEL_MAPPING.get(instruct_model_name)
+
+
+def load_model_and_tokenizer(
+    model_name: str,
+    load_in_8bit: bool = False,
+    gradient_checkpointing: bool = False,
+):
+    """Load a model and tokenizer.
+
+    Args:
+        model_name: HuggingFace model name
+        load_in_8bit: Whether to use 8-bit quantization
+        gradient_checkpointing: Whether to enable gradient checkpointing
+
+    Returns:
+        Tuple of (model, tokenizer, quantization_config)
+    """
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    logger.info(f"Loading model: {model_name}")
+    dtype = torch.bfloat16
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Try Flash Attention
+    attn_impl = None
+    try:
+        import flash_attn
+        attn_impl = "flash_attention_2"
+        logger.info("Flash Attention 2 enabled")
+    except ImportError:
+        logger.info("Flash Attention not available")
+
+    # Check for 8-bit quantization
+    quantization_config = None
+    actual_load_in_8bit = load_in_8bit
+    if load_in_8bit:
+        try:
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_threshold=6.0,
+            )
+            logger.info("8-bit quantization enabled")
+        except ImportError:
+            logger.warning("bitsandbytes not available, using bfloat16")
+            actual_load_in_8bit = False
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=dtype,
+        device_map="cuda",
+        trust_remote_code=True,
+        attn_implementation=attn_impl,
+        quantization_config=quantization_config,
+    )
+
+    # Prepare model for k-bit training or enable gradient checkpointing
+    if actual_load_in_8bit:
+        from peft import prepare_model_for_kbit_training
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing)
+        logger.info("Model prepared for 8-bit training")
+    elif gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+
+    torch.backends.cudnn.benchmark = True
+
+    return model, tokenizer
+
+
+def unload_model(model):
+    """Unload a model and free GPU memory."""
+    import torch
+    import gc
+
+    del model
+    torch.cuda.empty_cache()
+    gc.collect()
+    logger.info("Model unloaded and GPU memory cleared")
+
+
 # Global state for graceful shutdown
 class WorkerState:
     """Global state for worker shutdown handling."""
@@ -148,6 +245,19 @@ def run_experiment_for_task(
     exp_config.cpt.training_text_mode = config.get("training_text_mode", "essay_only")
     exp_config.cpt.gradient_checkpointing = config.get("gradient_checkpointing", False)
 
+    # Check train_on_base_model option
+    train_on_base_model = config.get("train_on_base_model", False)
+    base_model_name = get_base_model_name(model_name)
+    use_base_training = train_on_base_model and base_model_name is not None
+
+    if use_base_training:
+        training_model_name = base_model_name
+        scoring_model_name = model_name  # Original instruct model
+        logger.info(f"[BASE TRAINING MODE] Training on: {training_model_name}, Scoring on: {scoring_model_name}")
+    else:
+        training_model_name = model_name
+        scoring_model_name = model_name
+
     logger.info(f"Training config from server: lr={exp_config.cpt.lr}, lora_r={exp_config.cpt.lora_r}, lora_alpha={exp_config.cpt.lora_alpha}, grad_accum={exp_config.cpt.grad_accum_steps}, training_text_mode={exp_config.cpt.training_text_mode}, gradient_checkpointing={exp_config.cpt.gradient_checkpointing}")
 
     set_seed(seed)
@@ -180,80 +290,57 @@ def run_experiment_for_task(
     last_results_epoch = client.get_last_results(task_id)
     logger.info(f"Last completed epoch on server: {last_results_epoch}")
 
-    # Load model
-    logger.info(f"Loading model: {model_name}")
-    dtype = torch.bfloat16
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # Try Flash Attention
-    attn_impl = None
-    try:
-        import flash_attn
-        attn_impl = "flash_attention_2"
-        logger.info("Flash Attention 2 enabled")
-    except ImportError:
-        logger.info("Flash Attention not available")
-
-    # Check for 8-bit quantization
+    # Get quantization config
     load_in_8bit = config.get("load_in_8bit", False)
-    quantization_config = None
-    if load_in_8bit:
-        try:
-            from transformers import BitsAndBytesConfig
-            quantization_config = BitsAndBytesConfig(
-                load_in_8bit=True,
-                llm_int8_threshold=6.0,
-            )
-            logger.info("8-bit quantization enabled")
-        except ImportError:
-            logger.warning("bitsandbytes not available, using bfloat16")
-            load_in_8bit = False
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        device_map="cuda",
-        trust_remote_code=True,
-        attn_implementation=attn_impl,
-        quantization_config=quantization_config,
-    )
-
-    # Prepare model for k-bit training (required for 8-bit quantization)
-    if load_in_8bit:
-        from peft import prepare_model_for_kbit_training
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=exp_config.cpt.gradient_checkpointing)
-        logger.info("Model prepared for 8-bit training")
-    elif exp_config.cpt.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
-
-    torch.backends.cudnn.benchmark = True
-
-    # Initialize scorer
-    scorer = ZeroShotScorer(
-        model_name=model_name,
-        y_min=y_min,
-        y_max=y_max,
-        prompt_id=prompt_id,
-        device="cuda",
-        dtype="bfloat16",
-        dataset=dataset,  # Pass dataset type for correct prompt/rubric
-    )
-    scorer.set_model(model, tokenizer)
-
-    # Initialize logit extractor
+    # For base training mode, we'll load/unload models as needed
+    # For normal mode, load once and keep in memory
+    model = None
+    tokenizer = None
+    scorer = None
     logit_extractor = None
-    if exp_config.logit_extraction.enabled:
-        logit_extractor = create_logit_extractor(
-            model=model,
-            tokenizer=tokenizer,
+
+    if not use_base_training:
+        # Normal mode: Load model once and keep in memory
+        model, tokenizer = load_model_and_tokenizer(
+            model_name,
+            load_in_8bit=load_in_8bit,
+            gradient_checkpointing=exp_config.cpt.gradient_checkpointing,
+        )
+
+        # Initialize scorer
+        scorer = ZeroShotScorer(
+            model_name=model_name,
             y_min=y_min,
             y_max=y_max,
-            max_steps=exp_config.logit_extraction.max_steps,
-            prob_threshold=exp_config.logit_extraction.prob_threshold,
+            prompt_id=prompt_id,
             device="cuda",
+            dtype="bfloat16",
+            dataset=dataset,
+        )
+        scorer.set_model(model, tokenizer)
+
+        # Initialize logit extractor
+        if exp_config.logit_extraction.enabled:
+            logit_extractor = create_logit_extractor(
+                model=model,
+                tokenizer=tokenizer,
+                y_min=y_min,
+                y_max=y_max,
+                max_steps=exp_config.logit_extraction.max_steps,
+                prob_threshold=exp_config.logit_extraction.prob_threshold,
+                device="cuda",
+            )
+    else:
+        # Base training mode: Initialize scorer without model (will set later)
+        scorer = ZeroShotScorer(
+            model_name=scoring_model_name,
+            y_min=y_min,
+            y_max=y_max,
+            prompt_id=prompt_id,
+            device="cuda",
+            dtype="bfloat16",
+            dataset=dataset,
         )
 
     # Results tracking
@@ -324,6 +411,26 @@ def run_experiment_for_task(
         logger.info("Evaluating baseline (epoch 0)")
         logger.info("=" * 50)
 
+        if use_base_training:
+            # Base training mode: Load instruct model for baseline scoring
+            logger.info(f"Loading instruct model for baseline: {scoring_model_name}")
+            scoring_model, tokenizer = load_model_and_tokenizer(
+                scoring_model_name,
+                load_in_8bit=load_in_8bit,
+                gradient_checkpointing=False,  # No need for GC during inference
+            )
+            scorer.set_model(scoring_model, tokenizer)
+            if exp_config.logit_extraction.enabled:
+                logit_extractor = create_logit_extractor(
+                    model=scoring_model,
+                    tokenizer=tokenizer,
+                    y_min=y_min,
+                    y_max=y_max,
+                    max_steps=exp_config.logit_extraction.max_steps,
+                    prob_threshold=exp_config.logit_extraction.prob_threshold,
+                    device="cuda",
+                )
+
         epoch_results[0] = evaluate_epoch(0)
         full_m = epoch_results[0]['metrics'].get('greedy', {}).get('full', {})
         full_metrics_history['epochs'].append(0)
@@ -331,6 +438,11 @@ def run_experiment_for_task(
         full_metrics_history['spearman'].append(full_m.get('spearman', 0))
         full_metrics_history['qwk'].append(full_m.get('qwk', 0))
         logger.info(f"Epoch 0: Spearman={full_m.get('spearman', 0):.4f}, QWK={full_m.get('qwk', 0):.4f}")
+
+        if use_base_training:
+            # Unload instruct model
+            unload_model(scoring_model)
+            scoring_model = None
     else:
         # Load existing epoch 0 results from server
         logger.info("Loading existing epoch 0 results from server...")
@@ -347,12 +459,14 @@ def run_experiment_for_task(
     if max_epochs > 0:
         logger.info("=" * 50)
         logger.info("Starting continual pre-training")
+        if use_base_training:
+            logger.info("[BASE TRAINING MODE] Training on base model, scoring on instruct model")
         logger.info("=" * 50)
 
         # Determine start epoch
         start_epoch = max(1, last_results_epoch + 1)
 
-        # Initialize trainer
+        # Initialize trainer config
         trainer_config = SimpleTrainerConfig(
             lr=exp_config.cpt.lr,
             lora_r=exp_config.cpt.lora_r,
@@ -385,91 +499,210 @@ def run_experiment_for_task(
         else:
             logger.info("Using essay_only mode for training")
 
-        trainer = SimpleLoRATrainer(
-            model=model,
-            tokenizer=tokenizer,
-            config=trainer_config,
-            output_dir=str(checkpoint_dir),
-            training_prompt_builder=training_prompt_builder,
-        )
+        essay_texts = full_split.get_texts()
 
-        # Resume from checkpoint if needed
-        if start_epoch > 1:
-            logger.info(f"Resuming from epoch {start_epoch - 1}")
-            # Download checkpoint from server
-            adapter_dir = checkpoint_dir / f"epoch_{start_epoch - 1}" / "adapter"
-            if client.download_checkpoint(task_id, start_epoch - 1, adapter_dir):
-                trainer.model = PeftModel.from_pretrained(model, str(adapter_dir), is_trainable=True)
-                trainer._lora_applied = True
-                from torch.optim import AdamW
-                trainer.optimizer = AdamW(trainer.model.parameters(), lr=trainer_config.lr)
-                scorer.set_model(trainer.model, tokenizer)
-                if logit_extractor:
+        if use_base_training:
+            # ============================================
+            # BASE TRAINING MODE: Train on base, score on instruct
+            # ============================================
+            for epoch in range(start_epoch, max_epochs + 1):
+                logger.info("=" * 50)
+                logger.info(f"[BASE TRAINING] Epoch {epoch}/{max_epochs}")
+                logger.info("=" * 50)
+
+                # Step 1: Load base model for training
+                logger.info(f"Loading base model for training: {training_model_name}")
+                base_model, tokenizer = load_model_and_tokenizer(
+                    training_model_name,
+                    load_in_8bit=load_in_8bit,
+                    gradient_checkpointing=exp_config.cpt.gradient_checkpointing,
+                )
+
+                # Step 2: Create trainer with base model
+                trainer = SimpleLoRATrainer(
+                    model=base_model,
+                    tokenizer=tokenizer,
+                    config=trainer_config,
+                    output_dir=str(checkpoint_dir),
+                    training_prompt_builder=training_prompt_builder,
+                )
+
+                # Step 3: Resume from previous adapter or apply fresh LoRA
+                if epoch > 1:
+                    # Load previous epoch's adapter
+                    adapter_dir = checkpoint_dir / f"epoch_{epoch - 1}" / "adapter"
+                    if not adapter_dir.exists():
+                        # Download from server
+                        client.download_checkpoint(task_id, epoch - 1, adapter_dir)
+
+                    if adapter_dir.exists():
+                        logger.info(f"Loading adapter from epoch {epoch - 1}")
+                        trainer.model = PeftModel.from_pretrained(base_model, str(adapter_dir), is_trainable=True)
+                        trainer._lora_applied = True
+                        from torch.optim import AdamW
+                        trainer.optimizer = AdamW(trainer.model.parameters(), lr=trainer_config.lr)
+                    else:
+                        logger.warning(f"Adapter for epoch {epoch - 1} not found, applying fresh LoRA")
+                        trainer.apply_lora()
+                else:
+                    trainer.apply_lora()
+
+                # Step 4: Train
+                train_result = trainer.train_epoch(essay_texts, epoch)
+                logger.info(f"Training loss: {train_result['avg_loss']:.4f}")
+
+                # Step 5: Upload checkpoint
+                adapter_path = Path(train_result['adapter_path'])
+                client.upload_checkpoint(task_id, epoch, adapter_path)
+
+                # Step 6: Unload base model
+                unload_model(base_model)
+                del trainer
+                base_model = None
+
+                # Step 7: Load instruct model with adapter for scoring
+                logger.info(f"Loading instruct model for scoring: {scoring_model_name}")
+                instruct_model, tokenizer = load_model_and_tokenizer(
+                    scoring_model_name,
+                    load_in_8bit=load_in_8bit,
+                    gradient_checkpointing=False,  # No need for GC during inference
+                )
+
+                # Step 8: Apply trained adapter to instruct model
+                logger.info(f"Applying adapter to instruct model")
+                instruct_model_with_adapter = PeftModel.from_pretrained(
+                    instruct_model, str(adapter_path), is_trainable=False
+                )
+                scorer.set_model(instruct_model_with_adapter, tokenizer)
+
+                if exp_config.logit_extraction.enabled:
                     logit_extractor = create_logit_extractor(
-                        model=trainer.model, tokenizer=tokenizer,
-                        y_min=y_min, y_max=y_max,
+                        model=instruct_model_with_adapter,
+                        tokenizer=tokenizer,
+                        y_min=y_min,
+                        y_max=y_max,
                         max_steps=exp_config.logit_extraction.max_steps,
                         prob_threshold=exp_config.logit_extraction.prob_threshold,
                         device="cuda",
                     )
+
+                # Step 9: Evaluate
+                epoch_results[epoch] = evaluate_epoch(epoch)
+
+                # Update progress on server
+                client.update_progress(task_id, epoch)
+
+                # Log metrics
+                full_m = epoch_results[epoch]['metrics'].get('greedy', {}).get('full', {})
+                full_metrics_history['epochs'].append(epoch)
+                full_metrics_history['pearson'].append(full_m.get('pearson', 0))
+                full_metrics_history['spearman'].append(full_m.get('spearman', 0))
+                full_metrics_history['qwk'].append(full_m.get('qwk', 0))
+                logger.info(f"Epoch {epoch}: Spearman={full_m.get('spearman', 0):.4f}, QWK={full_m.get('qwk', 0):.4f}")
+
+                # Plot progress
+                plot_metrics_progress(
+                    epochs=full_metrics_history['epochs'],
+                    pearson_values=full_metrics_history['pearson'],
+                    spearman_values=full_metrics_history['spearman'],
+                    qwk_values=full_metrics_history['qwk'],
+                    save_path=str(output_dir / "metrics_progress.png"),
+                    title=f"Metrics Progress - Prompt {prompt_id} ({model_name.split('/')[-1]}) [BASE→INSTRUCT]",
+                    max_epochs=max_epochs,
+                )
+
+                # Step 10: Unload instruct model
+                unload_model(instruct_model)
+                instruct_model = None
+                instruct_model_with_adapter = None
+
+        else:
+            # ============================================
+            # NORMAL MODE: Train and score on same model
+            # ============================================
+            trainer = SimpleLoRATrainer(
+                model=model,
+                tokenizer=tokenizer,
+                config=trainer_config,
+                output_dir=str(checkpoint_dir),
+                training_prompt_builder=training_prompt_builder,
+            )
+
+            # Resume from checkpoint if needed
+            if start_epoch > 1:
+                logger.info(f"Resuming from epoch {start_epoch - 1}")
+                # Download checkpoint from server
+                adapter_dir = checkpoint_dir / f"epoch_{start_epoch - 1}" / "adapter"
+                if client.download_checkpoint(task_id, start_epoch - 1, adapter_dir):
+                    trainer.model = PeftModel.from_pretrained(model, str(adapter_dir), is_trainable=True)
+                    trainer._lora_applied = True
+                    from torch.optim import AdamW
+                    trainer.optimizer = AdamW(trainer.model.parameters(), lr=trainer_config.lr)
+                    scorer.set_model(trainer.model, tokenizer)
+                    if logit_extractor:
+                        logit_extractor = create_logit_extractor(
+                            model=trainer.model, tokenizer=tokenizer,
+                            y_min=y_min, y_max=y_max,
+                            max_steps=exp_config.logit_extraction.max_steps,
+                            prob_threshold=exp_config.logit_extraction.prob_threshold,
+                            device="cuda",
+                        )
+                else:
+                    logger.warning("Failed to download checkpoint, starting from scratch")
+                    start_epoch = 1
+                    trainer.apply_lora()
+                    scorer.set_model(trainer.model, tokenizer)
             else:
-                logger.warning("Failed to download checkpoint, starting from scratch")
-                start_epoch = 1
                 trainer.apply_lora()
                 scorer.set_model(trainer.model, tokenizer)
-        else:
-            trainer.apply_lora()
-            scorer.set_model(trainer.model, tokenizer)
 
-        if logit_extractor and start_epoch == 1:
-            logit_extractor = create_logit_extractor(
-                model=trainer.model, tokenizer=tokenizer,
-                y_min=y_min, y_max=y_max,
-                max_steps=exp_config.logit_extraction.max_steps,
-                prob_threshold=exp_config.logit_extraction.prob_threshold,
-                device="cuda",
-            )
+            if logit_extractor and start_epoch == 1:
+                logit_extractor = create_logit_extractor(
+                    model=trainer.model, tokenizer=tokenizer,
+                    y_min=y_min, y_max=y_max,
+                    max_steps=exp_config.logit_extraction.max_steps,
+                    prob_threshold=exp_config.logit_extraction.prob_threshold,
+                    device="cuda",
+                )
 
-        essay_texts = full_split.get_texts()
+            # Train and evaluate each epoch
+            for epoch in range(start_epoch, max_epochs + 1):
+                logger.info("=" * 50)
+                logger.info(f"Epoch {epoch}/{max_epochs}")
+                logger.info("=" * 50)
 
-        # Train and evaluate each epoch
-        for epoch in range(start_epoch, max_epochs + 1):
-            logger.info("=" * 50)
-            logger.info(f"Epoch {epoch}/{max_epochs}")
-            logger.info("=" * 50)
+                # Train
+                train_result = trainer.train_epoch(essay_texts, epoch)
+                logger.info(f"Training loss: {train_result['avg_loss']:.4f}")
 
-            # Train
-            train_result = trainer.train_epoch(essay_texts, epoch)
-            logger.info(f"Training loss: {train_result['avg_loss']:.4f}")
+                # Upload checkpoint
+                adapter_path = Path(train_result['adapter_path'])
+                client.upload_checkpoint(task_id, epoch, adapter_path)
 
-            # Upload checkpoint
-            adapter_path = Path(train_result['adapter_path'])
-            client.upload_checkpoint(task_id, epoch, adapter_path)
+                # Evaluate
+                epoch_results[epoch] = evaluate_epoch(epoch)
 
-            # Evaluate
-            epoch_results[epoch] = evaluate_epoch(epoch)
+                # Update progress on server
+                client.update_progress(task_id, epoch)
 
-            # Update progress on server
-            client.update_progress(task_id, epoch)
+                # Log metrics
+                full_m = epoch_results[epoch]['metrics'].get('greedy', {}).get('full', {})
+                full_metrics_history['epochs'].append(epoch)
+                full_metrics_history['pearson'].append(full_m.get('pearson', 0))
+                full_metrics_history['spearman'].append(full_m.get('spearman', 0))
+                full_metrics_history['qwk'].append(full_m.get('qwk', 0))
+                logger.info(f"Epoch {epoch}: Spearman={full_m.get('spearman', 0):.4f}, QWK={full_m.get('qwk', 0):.4f}")
 
-            # Log metrics
-            full_m = epoch_results[epoch]['metrics'].get('greedy', {}).get('full', {})
-            full_metrics_history['epochs'].append(epoch)
-            full_metrics_history['pearson'].append(full_m.get('pearson', 0))
-            full_metrics_history['spearman'].append(full_m.get('spearman', 0))
-            full_metrics_history['qwk'].append(full_m.get('qwk', 0))
-            logger.info(f"Epoch {epoch}: Spearman={full_m.get('spearman', 0):.4f}, QWK={full_m.get('qwk', 0):.4f}")
-
-            # Plot progress
-            plot_metrics_progress(
-                epochs=full_metrics_history['epochs'],
-                pearson_values=full_metrics_history['pearson'],
-                spearman_values=full_metrics_history['spearman'],
-                qwk_values=full_metrics_history['qwk'],
-                save_path=str(output_dir / "metrics_progress.png"),
-                title=f"Metrics Progress - Prompt {prompt_id} ({model_name.split('/')[-1]})",
-                max_epochs=max_epochs,
-            )
+                # Plot progress
+                plot_metrics_progress(
+                    epochs=full_metrics_history['epochs'],
+                    pearson_values=full_metrics_history['pearson'],
+                    spearman_values=full_metrics_history['spearman'],
+                    qwk_values=full_metrics_history['qwk'],
+                    save_path=str(output_dir / "metrics_progress.png"),
+                    title=f"Metrics Progress - Prompt {prompt_id} ({model_name.split('/')[-1]})",
+                    max_epochs=max_epochs,
+                )
 
     # Select best epoch
     metric_key = 'greedy'

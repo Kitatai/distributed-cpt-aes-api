@@ -436,6 +436,7 @@ async def get_task_config(task_id: str):
         training_text_mode=exp_config.get("training_text_mode", "essay_only"),
         gradient_checkpointing=exp_config.get("gradient_checkpointing", False),
         load_in_8bit=exp_config.get("load_in_8bit", False),
+        train_on_base_model=exp_config.get("train_on_base_model", False),
     )
 
 
@@ -896,6 +897,7 @@ class ExperimentConfigUpdate(BaseModel):
     training_text_mode: Optional[str] = None  # "essay_only", "scoring_prompt_short", or "scoring_prompt_full"
     gradient_checkpointing: Optional[bool] = None  # Enable to reduce memory usage
     load_in_8bit: Optional[bool] = None  # 8-bit quantization for memory savings
+    train_on_base_model: Optional[bool] = None  # Train on base model, score on instruct model
 
 
 @app.put("/config")

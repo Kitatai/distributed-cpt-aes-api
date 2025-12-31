@@ -113,3 +113,7 @@ class ExperimentConfig(BaseModel):
     # Memory optimization
     gradient_checkpointing: bool = False
     load_in_8bit: bool = False  # 8-bit quantization for memory savings
+    # Experimental: Train on base model, score on instruct model
+    # When True and model is llama8b, trains LoRA on Llama-3.1-8B (base)
+    # then applies adapter to Llama-3.1-8B-Instruct for scoring
+    train_on_base_model: bool = False
