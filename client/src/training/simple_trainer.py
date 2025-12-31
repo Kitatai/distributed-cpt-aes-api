@@ -219,22 +219,30 @@ class SimpleLoRATrainer:
         num_steps = 0
         self.optimizer.zero_grad()
 
-        # Setup cosine annealing within epoch (lr -> 0)
-        total_steps = len(dataloader)
-        import math
+        # Warmup + Linear Decay schedule (across all epochs)
+        # Warmup: epoch 1-5, lr increases 0 -> lr
+        # Decay: epoch 6-30, lr decreases lr -> 0
+        warmup_epochs = 5
+        total_epochs = 30  # TODO: make configurable
 
-        def get_lr(step):
-            """Cosine annealing: lr at step 0, 0 at final step."""
-            progress = step / max(total_steps - 1, 1)
-            return self.config.lr * (1 + math.cos(math.pi * progress)) / 2
+        if epoch <= warmup_epochs:
+            # Warmup phase: linear increase
+            current_lr = self.config.lr * (epoch / warmup_epochs)
+        else:
+            # Decay phase: linear decrease
+            decay_epochs = total_epochs - warmup_epochs
+            progress = (epoch - warmup_epochs) / decay_epochs
+            current_lr = self.config.lr * (1 - progress)
+
+        # Set learning rate for this epoch
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = current_lr
+
+        logger.info(f"Epoch {epoch} LR: {current_lr:.2e} (warmup={epoch <= warmup_epochs})")
 
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch}")
 
         for step, batch in enumerate(progress_bar):
-            # Update learning rate (cosine annealing within epoch)
-            current_lr = get_lr(step)
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = current_lr
 
             # Move to device
             input_ids = batch["input_ids"].to(self.model.device)
@@ -260,7 +268,7 @@ class SimpleLoRATrainer:
                 self.optimizer.zero_grad()
 
             # Update progress bar
-            progress_bar.set_postfix({"loss": f"{outputs.loss.item():.4f}", "lr": f"{current_lr:.2e}"})
+            progress_bar.set_postfix({"loss": f"{outputs.loss.item():.4f}"})
 
         # Final optimizer step if needed
         if num_steps % self.config.grad_accum_steps != 0:
