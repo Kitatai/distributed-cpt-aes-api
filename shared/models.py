@@ -26,7 +26,7 @@ class TaskInfo(BaseModel):
     worker_id: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    last_completed_epoch: int = 0
+    last_completed_epoch: Optional[int] = None
     max_epochs: int = 30
     error_message: Optional[str] = None
 

@@ -5,6 +5,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PID_FILE="$SCRIPT_DIR/server.pid"
 
+# Try PID file first
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
@@ -12,11 +13,19 @@ if [ -f "$PID_FILE" ]; then
         kill "$PID"
         rm "$PID_FILE"
         echo "Server stopped."
+        exit 0
     else
-        echo "Server not running (stale PID file)."
+        echo "Stale PID file, removing..."
         rm "$PID_FILE"
     fi
+fi
+
+# Fallback: find and kill uvicorn process
+PIDS=$(pgrep -f "uvicorn main:app" 2>/dev/null)
+if [ -n "$PIDS" ]; then
+    echo "Found running server process(es): $PIDS"
+    pkill -f "uvicorn main:app"
+    echo "Server stopped."
 else
-    echo "No PID file found. Server may not be running."
-    echo "Try: pkill -f 'uvicorn main:app'"
+    echo "No server running."
 fi

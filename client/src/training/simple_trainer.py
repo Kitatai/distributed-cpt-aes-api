@@ -161,6 +161,14 @@ class SimpleLoRATrainer:
         self.model = get_peft_model(self.base_model, lora_config)
         self.model.print_trainable_parameters()
 
+        # Cast LoRA parameters to float32 for numerical stability
+        lora_param_count = 0
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:  # LoRA parameters are trainable
+                param.data = param.data.to(torch.float32)
+                lora_param_count += 1
+        logger.info(f"Cast {lora_param_count} LoRA parameters to float32")
+
         # Initialize optimizer
         self.optimizer = AdamW(
             self.model.parameters(),
