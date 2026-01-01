@@ -247,6 +247,9 @@ def run_experiment_for_task(
     exp_config.cpt.grad_accum_steps = config["grad_accum_steps"]
     exp_config.cpt.training_text_mode = config.get("training_text_mode", "essay_only")
     exp_config.cpt.gradient_checkpointing = config.get("gradient_checkpointing", False)
+    exp_config.cpt.lr_schedule = config.get("lr_schedule", "warmup_decay")
+    exp_config.cpt.lr_init = config.get("lr_init", 1e-7)
+    exp_config.cpt.lr_final = config.get("lr_final", 1e-5)
 
     # Check train_on_base_model option
     train_on_base_model = config.get("train_on_base_model", False)
@@ -261,7 +264,7 @@ def run_experiment_for_task(
         training_model_name = model_name
         scoring_model_name = model_name
 
-    logger.info(f"Training config from server: lr={exp_config.cpt.lr}, lora_r={exp_config.cpt.lora_r}, lora_alpha={exp_config.cpt.lora_alpha}, grad_accum={exp_config.cpt.grad_accum_steps}, training_text_mode={exp_config.cpt.training_text_mode}, gradient_checkpointing={exp_config.cpt.gradient_checkpointing}")
+    logger.info(f"Training config from server: lr={exp_config.cpt.lr}, lora_r={exp_config.cpt.lora_r}, lora_alpha={exp_config.cpt.lora_alpha}, grad_accum={exp_config.cpt.grad_accum_steps}, training_text_mode={exp_config.cpt.training_text_mode}, gradient_checkpointing={exp_config.cpt.gradient_checkpointing}, lr_schedule={exp_config.cpt.lr_schedule}")
 
     set_seed(seed)
 
@@ -486,6 +489,9 @@ def run_experiment_for_task(
             batch_size=exp_config.cpt.batch_size,
             grad_accum_steps=exp_config.cpt.grad_accum_steps,
             seed=seed,
+            lr_schedule=exp_config.cpt.lr_schedule,
+            lr_init=exp_config.cpt.lr_init,
+            lr_final=exp_config.cpt.lr_final,
         )
 
         # Create training prompt builder if using prompt-based training

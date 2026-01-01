@@ -117,3 +117,9 @@ class ExperimentConfig(BaseModel):
     # When True and model is llama8b, trains LoRA on Llama-3.1-8B (base)
     # then applies adapter to Llama-3.1-8B-Instruct for scoring
     train_on_base_model: bool = False
+    # LR schedule options
+    # "warmup_decay" - Linear warmup (5 epochs) + linear decay (25 epochs)
+    # "exponential_warmup" - Exponential growth from lr_init to lr_final
+    lr_schedule: str = "warmup_decay"
+    lr_init: float = 1e-7  # Initial LR for exponential_warmup
+    lr_final: float = 1e-5  # Final LR for exponential_warmup

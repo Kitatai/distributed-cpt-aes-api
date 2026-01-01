@@ -142,6 +142,10 @@ class ContinualPretrainingConfig:
     #   "essay_only" - Train on raw essay text only (original behavior)
     #   "scoring_prompt_short" - Train on shortened scoring prompt (task + score range + essay + output format)
     training_text_mode: str = "essay_only"
+    # LR schedule options
+    lr_schedule: str = "warmup_decay"  # "warmup_decay" or "exponential_warmup"
+    lr_init: float = 1e-7  # Initial LR for exponential_warmup
+    lr_final: float = 1e-5  # Final LR for exponential_warmup
 
 
 @dataclass

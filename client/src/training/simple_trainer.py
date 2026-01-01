@@ -32,6 +32,10 @@ class SimpleTrainerConfig:
     batch_size: int = 1
     grad_accum_steps: int = 8
     seed: int = 42  # Random seed for reproducibility
+    # LR schedule options
+    lr_schedule: str = "warmup_decay"  # "warmup_decay" or "exponential_warmup"
+    lr_init: float = 1e-7  # Initial LR for exponential_warmup
+    lr_final: float = 1e-5  # Final LR for exponential_warmup
 
     def __post_init__(self):
         if self.target_modules is None:
@@ -221,25 +225,40 @@ class SimpleLoRATrainer:
         num_steps = 0
         self.optimizer.zero_grad()
 
-        # Warmup + Linear Decay schedule (step-level across all epochs)
-        # Warmup: first 5 epochs worth of steps, lr increases 0 -> lr
-        # Decay: remaining 25 epochs worth of steps, lr decreases lr -> 0
-        warmup_epochs = 5
+        # LR schedule configuration
         total_epochs = 30  # TODO: make configurable
         steps_per_epoch = len(dataloader)
         total_steps = total_epochs * steps_per_epoch
-        warmup_steps = warmup_epochs * steps_per_epoch
 
-        def get_lr_for_step(global_step):
-            """Calculate LR based on global step (warmup + linear decay)."""
-            if global_step < warmup_steps:
-                # Warmup phase: linear increase 0 -> lr
-                return self.config.lr * (global_step / warmup_steps)
-            else:
-                # Decay phase: linear decrease lr -> 0
-                decay_steps = total_steps - warmup_steps
-                progress = (global_step - warmup_steps) / decay_steps
-                return self.config.lr * (1 - progress)
+        if self.config.lr_schedule == "exponential_warmup":
+            # Exponential warmup: LR grows from lr_init to lr_final
+            # LR(step) = lr_init * (1 + alpha)^step
+            # where alpha = (lr_final / lr_init)^(1/total_steps) - 1
+            import math
+            lr_ratio = self.config.lr_final / self.config.lr_init
+            alpha = math.pow(lr_ratio, 1.0 / total_steps) - 1
+            logger.info(f"Exponential warmup: LR {self.config.lr_init:.2e} -> {self.config.lr_final:.2e} over {total_steps} steps (alpha={alpha:.6f})")
+
+            def get_lr_for_step(global_step):
+                """Calculate LR based on global step (exponential warmup)."""
+                return self.config.lr_init * math.pow(1 + alpha, global_step)
+        else:
+            # Default: Warmup + Linear Decay schedule
+            # Warmup: first 5 epochs worth of steps, lr increases 0 -> lr
+            # Decay: remaining 25 epochs worth of steps, lr decreases lr -> 0
+            warmup_epochs = 5
+            warmup_steps = warmup_epochs * steps_per_epoch
+
+            def get_lr_for_step(global_step):
+                """Calculate LR based on global step (warmup + linear decay)."""
+                if global_step < warmup_steps:
+                    # Warmup phase: linear increase 0 -> lr
+                    return self.config.lr * (global_step / warmup_steps)
+                else:
+                    # Decay phase: linear decrease lr -> 0
+                    decay_steps = total_steps - warmup_steps
+                    progress = (global_step - warmup_steps) / decay_steps
+                    return self.config.lr * (1 - progress)
 
         # Calculate starting global step for this epoch
         epoch_start_global_step = (epoch - 1) * steps_per_epoch

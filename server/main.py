@@ -437,6 +437,9 @@ async def get_task_config(task_id: str):
         gradient_checkpointing=exp_config.get("gradient_checkpointing", False),
         load_in_8bit=exp_config.get("load_in_8bit", False),
         train_on_base_model=exp_config.get("train_on_base_model", False),
+        lr_schedule=exp_config.get("lr_schedule", "warmup_decay"),
+        lr_init=exp_config.get("lr_init", 1e-7),
+        lr_final=exp_config.get("lr_final", 1e-5),
     )
 
 
@@ -898,6 +901,9 @@ class ExperimentConfigUpdate(BaseModel):
     gradient_checkpointing: Optional[bool] = None  # Enable to reduce memory usage
     load_in_8bit: Optional[bool] = None  # 8-bit quantization for memory savings
     train_on_base_model: Optional[bool] = None  # Train on base model, score on instruct model
+    lr_schedule: Optional[str] = None  # "warmup_decay" or "exponential_warmup"
+    lr_init: Optional[float] = None  # Initial LR for exponential_warmup
+    lr_final: Optional[float] = None  # Final LR for exponential_warmup
 
 
 @app.put("/config")
