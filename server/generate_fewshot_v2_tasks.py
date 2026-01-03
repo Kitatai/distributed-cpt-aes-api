@@ -2,14 +2,12 @@
 """
 Generate few-shot v2 experiment tasks.
 
-Creates tasks for the new few-shot approach:
-- Split 10 dev samples: 3 shot + 7 eval
-- Search all epochs 0-30 using 7-sample MSE
-- Evaluate test set at best epoch
+Creates tasks for few-shot experiments using new sample patterns:
+- 3 models × 8 prompts × 3 k values × 10 patterns = 720 tasks
+- Uses sample_patterns_v2.json with test_ids, dev_ids, fewshot_ids
 
 Usage:
-    python generate_fewshot_v2_tasks.py --prompts 1,2,3,4,5,6,7,8 --patterns 1
-    python generate_fewshot_v2_tasks.py --prompts 1 --patterns 50  # All 50 patterns
+    python generate_fewshot_v2_tasks.py [--n-patterns N] [--k-values K1,K2,K3]
 """
 
 import json
@@ -18,143 +16,120 @@ from pathlib import Path
 from datetime import datetime
 
 
-def load_json(path: Path) -> dict:
-    """Load JSON file."""
-    with open(path) as f:
-        return json.load(f)
-
-
-def save_json(data: dict, path: Path):
-    """Save JSON file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Generate few-shot v2 tasks")
-    parser.add_argument(
-        "--prompts",
-        type=str,
-        default="1,2,3,4,5,6,7,8",
-        help="Comma-separated prompt IDs (default: 1,2,3,4,5,6,7,8)",
-    )
-    parser.add_argument(
-        "--patterns",
-        type=int,
-        default=1,
-        help="Number of patterns to use (1-50, default: 1)",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="llama8b",
-        choices=["llama8b", "llama3b", "mistral"],
-        help="Model to use (default: llama8b)",
-    )
-    parser.add_argument(
-        "--n-shot",
-        type=int,
-        default=3,
-        help="Number of few-shot examples (default: 3)",
-    )
-    parser.add_argument(
-        "--test-ratio",
-        type=float,
-        default=0.1,
-        help="Test sample ratio (default: 0.1 = 10%%)",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=str,
-        default=None,
-        help="Data directory (default: data/backup_zeroshot_v1)",
-    )
-
+    parser.add_argument("--n-patterns", type=int, default=10,
+                        help="Number of patterns to use (default: 10)")
+    parser.add_argument("--k-values", type=str, default="1,3,5",
+                        help="Comma-separated k values for few-shot (default: 1,3,5)")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Base data directory (default: data)")
+    parser.add_argument("--output", type=str, default=None,
+                        help="Output directory (default: DATA_DIR/tasks_fewshot_v2)")
     args = parser.parse_args()
 
+    k_values = [int(k) for k in args.k_values.split(",")]
+
     script_dir = Path(__file__).parent
+
+    # Data directory
     if args.data_dir:
         data_dir = Path(args.data_dir)
+        if not data_dir.is_absolute():
+            data_dir = script_dir / data_dir
     else:
-        data_dir = script_dir / "data" / "backup_zeroshot_v1"
+        data_dir = script_dir / "data"
 
-    # Model mapping
-    model_configs = {
-        "llama8b": "meta-llama/Llama-3.1-8B-Instruct",
-        "llama3b": "meta-llama/Llama-3.2-3B-Instruct",
-        "mistral": "mistralai/Mistral-7B-Instruct-v0.3",
-    }
+    # Load patterns
+    patterns_path = data_dir / "sample_patterns_v2.json"
+    print(f"Loading patterns from {patterns_path}")
+    with open(patterns_path) as f:
+        patterns_data = json.load(f)
+    patterns = patterns_data['patterns']
 
-    model_short = args.model
-    model_name = model_configs[model_short]
-
-    # Parse prompts
-    prompt_ids = [int(p.strip()) for p in args.prompts.split(",")]
-    n_patterns = args.patterns
-
-    # Load sample patterns
-    patterns_path = data_dir / "sample_patterns.json"
-    print(f"Loading sample patterns from {patterns_path}")
-    patterns = load_json(patterns_path)
+    # Load experiment config
+    config_path = data_dir / "experiment_config.json"
+    if not config_path.exists():
+        config_path = script_dir / "data" / "experiment_config.json"
+    print(f"Loading experiment config from {config_path}")
+    with open(config_path) as f:
+        exp_config = json.load(f)
 
     # Output directory
-    tasks_dir = data_dir / "tasks_fewshot_v2"
-    tasks_dir.mkdir(parents=True, exist_ok=True)
+    if args.output:
+        output_dir = Path(args.output)
+    else:
+        output_dir = data_dir / "tasks_fewshot_v2"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Models
+    models = [
+        ("meta-llama/Meta-Llama-3.1-8B-Instruct", "llama8b"),
+        ("meta-llama/Llama-3.2-3B-Instruct", "llama3b"),
+        ("mistralai/Mistral-7B-Instruct-v0.3", "mistral"),
+    ]
 
     tasks_created = []
 
-    for prompt_id in prompt_ids:
-        prompt_key = f"prompt{prompt_id}"
-        prompt_patterns = patterns['patterns'].get(prompt_key, [])
+    for model_name, model_short in models:
+        for prompt_id in range(1, 9):
+            prompt_key = f"prompt{prompt_id}"
 
-        if len(prompt_patterns) < n_patterns:
-            print(f"Warning: Only {len(prompt_patterns)} patterns available for {prompt_key}")
-            n_patterns_actual = len(prompt_patterns)
-        else:
-            n_patterns_actual = n_patterns
+            for k in k_values:
+                for pattern_idx in range(args.n_patterns):
+                    task_id = f"fewshot_k{k}_prompt{prompt_id}_{model_short}_p{pattern_idx}"
 
-        for pattern_idx in range(n_patterns_actual):
-            sample_ids = prompt_patterns[pattern_idx]
+                    pattern = patterns[prompt_key][pattern_idx]
+                    test_ids = pattern['test_ids']
+                    dev_ids = pattern['dev_ids']
+                    fewshot_ids = pattern['fewshot_ids']
 
-            if len(sample_ids) < 10:
-                print(f"Warning: Pattern {pattern_idx} has only {len(sample_ids)} samples, skipping")
-                continue
+                    # Use first k examples from fewshot_ids
+                    example_ids = fewshot_ids[:k]
 
-            task_id = f"fewshot_v2_prompt{prompt_id}_{model_short}_p{pattern_idx}"
+                    task_config = {
+                        "task_id": task_id,
+                        "prompt_id": prompt_id,
+                        "model_name": model_name,
+                        "model_short_name": model_short,
+                        "k": k,
+                        "pattern_idx": pattern_idx,
+                        "test_ids": test_ids,
+                        "dev_ids": dev_ids,
+                        "example_ids": example_ids,
+                        "dataset": "asap",
+                        # Hyperparameters
+                        "lr": exp_config.get("lr", 1e-5),
+                        "lora_r": exp_config.get("lora_r", 16),
+                        "lora_alpha": exp_config.get("lora_alpha", 32),
+                        "max_seq_len": exp_config.get("max_seq_len", 2048),
+                        "max_epochs": exp_config.get("max_epochs", 30),
+                        # Status
+                        "status": "pending",
+                        "created_at": datetime.now().isoformat(),
+                    }
 
-            task_config = {
-                "task_id": task_id,
-                "prompt_id": prompt_id,
-                "model_name": model_name,
-                "model_short": model_short,
-                "dataset": "asap",
-                "pattern_idx": pattern_idx,
-                "sample_ids": sample_ids,
-                "n_shot": args.n_shot,
-                "split_seed": 42,
-                "test_sample_ratio": args.test_ratio,
-                "max_epochs": 30,
-                "status": "pending",
-                "created_at": datetime.now().isoformat(),
-            }
+                    task_path = output_dir / f"{task_id}.json"
+                    with open(task_path, 'w') as f:
+                        json.dump(task_config, f, indent=2)
 
-            # Save task
-            task_path = tasks_dir / f"{task_id}.json"
-            save_json(task_config, task_path)
-            tasks_created.append(task_id)
+                    tasks_created.append(task_id)
 
-            print(f"Created {task_id}:")
-            print(f"  sample_ids: {sample_ids}")
-            print(f"  n_shot: {args.n_shot}, test_ratio: {args.test_ratio}")
+    print(f"\n{len(tasks_created)} tasks created in {output_dir}")
+    print(f"  Models: {[m[1] for m in models]}")
+    print(f"  Prompts: 1-8")
+    print(f"  K values: {k_values}")
+    print(f"  Patterns: 0-{args.n_patterns - 1}")
 
-    print(f"\n{len(tasks_created)} tasks created in {tasks_dir}")
-    print("Tasks:", tasks_created)
-
-    # Print run command
-    print("\nTo run the experiment:")
-    print(f"  cd {script_dir.parent / 'client'}")
-    print(f"  python worker_fewshot_v2.py --data-dir {data_dir}")
+    # Show example
+    print(f"\nExample task: {tasks_created[0]}")
+    with open(output_dir / f"{tasks_created[0]}.json") as f:
+        example = json.load(f)
+    print(f"  k: {example['k']}")
+    print(f"  pattern_idx: {example['pattern_idx']}")
+    print(f"  n_test: {len(example['test_ids'])}")
+    print(f"  n_dev: {len(example['dev_ids'])}")
+    print(f"  example_ids: {example['example_ids']}")
 
 
 if __name__ == "__main__":

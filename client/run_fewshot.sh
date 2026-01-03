@@ -3,7 +3,8 @@
 # Usage: ./run_fewshot.sh [task_id]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SERVER_DIR="$(dirname "$SCRIPT_DIR")/server/data"
+# Use backup_zeroshot_v3 for checkpoints (best epochs from v3 experiment)
+SERVER_DIR="$(dirname "$SCRIPT_DIR")/server/data/backup_zeroshot_v3"
 LOG_FILE="$SCRIPT_DIR/fewshot.log"
 PID_FILE="$SCRIPT_DIR/fewshot.pid"
 

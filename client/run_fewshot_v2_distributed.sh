@@ -1,61 +1,56 @@
 #!/bin/bash
-# Worker script for few-shot v2 experiment
+# Distributed worker script for few-shot v2 experiment
 # Runs the worker in background with logging
+#
+# Usage:
+#   ./run_fewshot_v2_distributed.sh --server http://SERVER_IP:8000
+#   ./run_fewshot_v2_distributed.sh --server http://192.168.100.10:8000 --k 1
+#   ./run_fewshot_v2_distributed.sh --server http://192.168.100.10:8000 --model llama8b
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Data directory (backup_zeroshot_v3)
-DATA_DIR="$SCRIPT_DIR/../server/data/backup_zeroshot_v3"
-
 # Log file
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/fewshot_v2_${TIMESTAMP}.log"
+LOG_FILE="$LOG_DIR/fewshot_v2_distributed_${TIMESTAMP}.log"
 
-echo "=== Few-shot v2 Experiment Worker ==="
-echo "Data directory: $DATA_DIR"
+echo "=== Few-shot v2 Distributed Worker ==="
 echo "Log file: $LOG_FILE"
 echo ""
 
-# Check if checkpoints exist
-if [ ! -d "$DATA_DIR/checkpoints" ]; then
-    echo "Error: Checkpoints not found at $DATA_DIR/checkpoints"
-    exit 1
-fi
-
-# Check if tasks exist
-if [ ! -d "$DATA_DIR/tasks_fewshot_v2" ] || [ -z "$(ls -A $DATA_DIR/tasks_fewshot_v2 2>/dev/null)" ]; then
-    echo "Error: No tasks found at $DATA_DIR/tasks_fewshot_v2"
-    echo "Please run: cd ../server && python generate_fewshot_v2_tasks.py"
-    exit 1
-fi
-
-# Parse optional arguments
-# Usage: ./run_fewshot_v2_worker.sh [--k K] [--model MODEL] [--prompt PROMPT]
-
-CMD="uv run python worker_fewshot_v2.py --server-dir $DATA_DIR"
+# Build command with all arguments
+CMD="uv run python worker_fewshot_v2_distributed.py"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --server)
+            CMD="$CMD --server $2"
+            echo "Server: $2"
+            shift 2
+            ;;
         --k)
             CMD="$CMD --k $2"
+            echo "Filter k: $2"
             shift 2
             ;;
         --model)
             CMD="$CMD --model $2"
+            echo "Filter model: $2"
             shift 2
             ;;
         --prompt)
             CMD="$CMD --prompt $2"
+            echo "Filter prompt: $2"
             shift 2
             ;;
-        --task-id)
-            CMD="$CMD --task-id $2"
-            shift 2
+        --once)
+            CMD="$CMD --once"
+            echo "Run once: yes"
+            shift
             ;;
         *)
             echo "Unknown option: $1"
@@ -64,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+echo ""
 echo "Running: $CMD"
 echo "Starting in background..."
 echo ""

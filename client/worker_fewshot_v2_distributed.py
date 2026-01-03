@@ -1,31 +1,33 @@
 #!/usr/bin/env python3
 """
-Few-shot v2 worker for CPT-AES experiments.
+Distributed few-shot v2 worker for CPT-AES experiments.
+
+Connects to the API server to get tasks, runs experiments locally,
+and uploads results back to the server.
+
+Usage:
+    python worker_fewshot_v2_distributed.py --server http://SERVER_IP:8000
 
 Uses new sample_patterns_v2.json format with explicit:
 - test_ids: Essays for final evaluation
 - dev_ids: Essays for epoch selection (MSE-based)
 - example_ids: Essays for few-shot examples (k=1,3,5)
-
-Workflow:
-1. Load few-shot examples from example_ids
-2. For each epoch 0-30, score dev_ids with few-shot prompting
-3. Select best epoch by MSE on dev_ids (earliest if tie)
-4. Evaluate test_ids at epoch 0 and best epoch
-5. Report QWK and Spearman correlation
 """
 
 import os
 import sys
-import json
+import time
+import signal
+import socket
 import logging
 import argparse
 import tempfile
 import zipfile
 import gc
+import threading
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 
 import pandas as pd
 import numpy as np
@@ -42,32 +44,37 @@ logger = logging.getLogger(__name__)
 CLIENT_DIR = Path(__file__).parent
 sys.path.insert(0, str(CLIENT_DIR / "src"))
 
-
-def load_json(path: Path) -> dict:
-    """Load JSON file."""
-    with open(path) as f:
-        return json.load(f)
+from api_client import APIClient
 
 
-def save_json(data: dict, path: Path):
-    """Save JSON file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
+# Global state for graceful shutdown
+class WorkerState:
+    """Global state for worker shutdown handling."""
+    shutdown_requested = False
+    current_task_id = None
+    client = None
+    lock = threading.Lock()
 
 
-def save_csv(data: List[dict], path: Path):
-    """Save list of dicts to CSV."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame(data)
-    df.to_csv(path, index=False)
+_state = WorkerState()
+
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals (SIGINT, SIGTERM)."""
+    with _state.lock:
+        if _state.shutdown_requested:
+            logger.warning("Force shutdown requested, exiting immediately")
+            sys.exit(1)
+
+        _state.shutdown_requested = True
+        logger.info("Shutdown requested, will stop after current task completes")
+        logger.info("Press Ctrl+C again to force immediate exit")
 
 
 def run_fewshot_v2_experiment(
     task_config: dict,
     data_path: Path,
-    checkpoints_dir: Path,
-    output_dir: Path,
+    client: APIClient,
 ):
     """
     Run few-shot v2 experiment for a single task.
@@ -75,8 +82,7 @@ def run_fewshot_v2_experiment(
     Args:
         task_config: Task configuration with test_ids, dev_ids, example_ids
         data_path: Path to ASAP data file
-        checkpoints_dir: Path to checkpoints directory
-        output_dir: Path to save results
+        client: API client for downloading checkpoints
     """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -224,36 +230,24 @@ def run_fewshot_v2_experiment(
 
         return results
 
-    def load_model_with_adapter(base_model, epoch: int):
-        """Load LoRA adapter for specified epoch."""
+    def download_and_load_adapter(base_model, epoch: int):
+        """Download checkpoint from server and load as LoRA adapter."""
         if epoch == 0:
             return base_model, True
 
         zeroshot_task_id = f"prompt{prompt_id}_{model_short}"
-        checkpoint_path = checkpoints_dir / zeroshot_task_id / f"epoch_{epoch}" / "adapter.zip"
 
-        if not checkpoint_path.exists():
-            logger.warning(f"Checkpoint not found: {checkpoint_path}")
-            return base_model, False
-
-        # Extract and load adapter
+        # Download checkpoint from server
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            with zipfile.ZipFile(checkpoint_path, 'r') as zf:
-                zf.extractall(tmp_path)
+
+            success = client.download_checkpoint(zeroshot_task_id, epoch, tmp_path)
+            if not success:
+                logger.warning(f"Checkpoint not found on server: {zeroshot_task_id}/epoch_{epoch}")
+                return base_model, False
 
             model_with_lora = PeftModel.from_pretrained(base_model, str(tmp_path), is_trainable=False)
             return model_with_lora, True
-
-    def unload_model(model):
-        """Unload model and clear GPU memory."""
-        del model
-        gc.collect()
-        torch.cuda.empty_cache()
-
-    # Create output directory
-    task_output_dir = output_dir / task_id
-    task_output_dir.mkdir(parents=True, exist_ok=True)
 
     # ========================================
     # Phase 1: Evaluate all epochs on dev data
@@ -274,23 +268,32 @@ def run_fewshot_v2_experiment(
         attn_implementation=attn_impl,
     )
 
+    zeroshot_task_id = f"prompt{prompt_id}_{model_short}"
+
     for epoch in range(0, max_epochs + 1):
+        # Check for shutdown request
+        if _state.shutdown_requested:
+            logger.info("Shutdown requested, stopping early")
+            break
+
         logger.info(f"Evaluating epoch {epoch}/{max_epochs} on dev...")
 
         if epoch == 0:
             model = base_model
         else:
-            zeroshot_task_id = f"prompt{prompt_id}_{model_short}"
-            checkpoint_path = checkpoints_dir / zeroshot_task_id / f"epoch_{epoch}" / "adapter.zip"
-
-            if not checkpoint_path.exists():
-                logger.warning(f"Skipping epoch {epoch} - checkpoint not found")
-                continue
-
+            # Download checkpoint from server
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir)
-                with zipfile.ZipFile(checkpoint_path, 'r') as zf:
-                    zf.extractall(tmp_path)
+
+                if not client.check_checkpoint(zeroshot_task_id, epoch):
+                    logger.warning(f"Skipping epoch {epoch} - checkpoint not found on server")
+                    continue
+
+                success = client.download_checkpoint(zeroshot_task_id, epoch, tmp_path)
+                if not success:
+                    logger.warning(f"Failed to download checkpoint for epoch {epoch}")
+                    continue
+
                 model = PeftModel.from_pretrained(base_model, str(tmp_path), is_trainable=False)
 
         # Score dev data
@@ -314,6 +317,9 @@ def run_fewshot_v2_experiment(
     del base_model
     gc.collect()
     torch.cuda.empty_cache()
+
+    if not epoch_mse_results:
+        raise RuntimeError("No epochs could be evaluated")
 
     # ========================================
     # Phase 2: Select best epoch
@@ -348,7 +354,7 @@ def run_fewshot_v2_experiment(
         if epoch == 0:
             model = base_model
         else:
-            model, success = load_model_with_adapter(base_model, epoch)
+            model, success = download_and_load_adapter(base_model, epoch)
             if not success:
                 model = base_model
 
@@ -381,14 +387,11 @@ def run_fewshot_v2_experiment(
     metrics_e0 = evaluate_epoch_on_test(0, "Test E0")
     logger.info(f"Epoch 0: QWK={metrics_e0['qwk']:.4f}, Spearman={metrics_e0['spearman']:.4f}")
 
-    save_csv(metrics_e0['predictions'], task_output_dir / "predictions_epoch_0.csv")
-
     # Evaluate best epoch
     if best_epoch > 0:
         logger.info(f"Evaluating epoch {best_epoch} on test...")
         metrics_best = evaluate_epoch_on_test(best_epoch, f"Test E{best_epoch}")
         logger.info(f"Epoch {best_epoch}: QWK={metrics_best['qwk']:.4f}, Spearman={metrics_best['spearman']:.4f}")
-        save_csv(metrics_best['predictions'], task_output_dir / f"predictions_epoch_{best_epoch}.csv")
     else:
         metrics_best = metrics_e0
 
@@ -398,7 +401,7 @@ def run_fewshot_v2_experiment(
         'spearman': metrics_best['spearman'] - metrics_e0['spearman'],
     }
 
-    # Save summary
+    # Build summary (without predictions for JSON serialization)
     summary = {
         'task_id': task_id,
         'prompt_id': prompt_id,
@@ -429,8 +432,6 @@ def run_fewshot_v2_experiment(
         'completed_at': datetime.now().isoformat(),
     }
 
-    save_json(summary, task_output_dir / "summary.json")
-
     logger.info("=" * 60)
     logger.info(f"Task {task_id} completed")
     logger.info(f"Selected epoch: {best_epoch} (MSE on dev: {best_mse:.4f})")
@@ -443,18 +444,12 @@ def run_fewshot_v2_experiment(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Few-shot v2 CPT-AES Worker")
+    parser = argparse.ArgumentParser(description="Distributed Few-shot v2 CPT-AES Worker")
     parser.add_argument(
-        "--server-dir",
+        "--server",
         type=str,
-        required=True,
-        help="Path to server data directory (with checkpoints)",
-    )
-    parser.add_argument(
-        "--task-id",
-        type=str,
-        default=None,
-        help="Specific task ID to run (default: run all pending tasks)",
+        default="http://localhost:8000",
+        help="Server URL (e.g., http://192.168.100.10:8000)",
     )
     parser.add_argument(
         "--k",
@@ -474,71 +469,117 @@ def main():
         default=None,
         help="Filter tasks by model (llama8b, llama3b, mistral)",
     )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run only one task and exit",
+    )
 
     args = parser.parse_args()
 
-    server_dir = Path(args.server_dir)
-    tasks_dir = server_dir / "tasks_fewshot_v2"
-    checkpoints_dir = server_dir / "checkpoints"
-    results_dir = server_dir / "results_fewshot_v2"
-    data_path = server_dir / "asap" / "training_set_rel3.tsv"
+    # Generate worker ID
+    hostname = socket.gethostname()
+    worker_id = f"{hostname}-fewshot-{datetime.now().strftime('%H%M%S')}"
+    logger.info(f"Worker ID: {worker_id}")
 
-    # Ensure directories exist
-    results_dir.mkdir(parents=True, exist_ok=True)
+    # Setup signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
-    # Find tasks to run
-    if args.task_id:
-        task_files = [tasks_dir / f"{args.task_id}.json"]
-    else:
-        task_files = sorted(tasks_dir.glob("*.json"))
+    # Create API client
+    client = APIClient(args.server, worker_id)
+    _state.client = client
 
-    # Filter tasks
-    filtered_files = []
-    for task_file in task_files:
-        if not task_file.exists():
+    # Check server health
+    if not client.health_check():
+        logger.error(f"Cannot connect to server at {args.server}")
+        sys.exit(1)
+    logger.info(f"Connected to server: {args.server}")
+
+    # Download ASAP data if needed
+    data_dir = CLIENT_DIR / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    data_path = data_dir / "training_set_rel3.tsv"
+
+    if not data_path.exists():
+        logger.info("Downloading ASAP data from server...")
+        if not client.download_asap_data(data_path):
+            logger.error("Failed to download ASAP data")
+            sys.exit(1)
+
+    # Get initial status
+    status = client.get_fewshot_v2_status()
+    if status:
+        logger.info(f"Few-shot v2 status: {status.get('pending', 0)} pending, "
+                   f"{status.get('running', 0)} running, "
+                   f"{status.get('completed', 0)} completed")
+
+    # Main loop
+    tasks_completed = 0
+    consecutive_failures = 0
+    max_failures = 3
+
+    while not _state.shutdown_requested:
+        # Get next task
+        task = client.get_next_fewshot_v2_task(
+            k=args.k,
+            model=args.model,
+            prompt=args.prompt,
+        )
+
+        if task is None:
+            if consecutive_failures > 0:
+                logger.info("No more tasks available")
+            else:
+                logger.info("No pending tasks, waiting...")
+            if args.once:
+                break
+            time.sleep(30)
             continue
-        task_config = load_json(task_file)
 
-        if args.k is not None and task_config.get('k') != args.k:
-            continue
-        if args.prompt is not None and task_config.get('prompt_id') != args.prompt:
-            continue
-        if args.model is not None and task_config.get('model_short_name') != args.model:
-            continue
-
-        filtered_files.append(task_file)
-
-    logger.info(f"Found {len(filtered_files)} task(s) to process")
-
-    for task_file in filtered_files:
-        task_config = load_json(task_file)
-        task_id = task_config['task_id']
-
-        # Check if already completed
-        summary_path = results_dir / task_id / "summary.json"
-        if summary_path.exists():
-            logger.info(f"Task {task_id} already completed, skipping")
-            continue
-
+        task_id = task["task_id"]
+        _state.current_task_id = task_id
         logger.info(f"\n{'='*60}")
         logger.info(f"Starting task: {task_id}")
         logger.info(f"{'='*60}")
 
         try:
-            run_fewshot_v2_experiment(
-                task_config=task_config,
+            # Run experiment
+            summary = run_fewshot_v2_experiment(
+                task_config=task,
                 data_path=data_path,
-                checkpoints_dir=checkpoints_dir,
-                output_dir=results_dir,
+                client=client,
             )
+
+            # Report completion
+            if client.complete_fewshot_v2_task(task_id, summary):
+                logger.info(f"Task {task_id} completed and reported to server")
+                tasks_completed += 1
+                consecutive_failures = 0
+            else:
+                logger.error(f"Failed to report task completion for {task_id}")
+
         except Exception as e:
             logger.exception(f"Task {task_id} failed: {e}")
+            client.fail_fewshot_v2_task(task_id, str(e))
+            consecutive_failures += 1
+
+            if consecutive_failures >= max_failures:
+                logger.error(f"Too many consecutive failures ({max_failures}), stopping")
+                break
+
         finally:
+            _state.current_task_id = None
+
+            # Clear GPU memory
             import torch
             gc.collect()
             torch.cuda.empty_cache()
 
-    logger.info("\nAll tasks completed")
+        if args.once:
+            break
+
+    logger.info(f"\nWorker finished. Tasks completed: {tasks_completed}")
 
 
 if __name__ == "__main__":

@@ -462,3 +462,94 @@ class APIClient:
             return resp.json()
         except requests.RequestException:
             return {"index_exists": False, "rubric_exists": False, "prompts_exist": False}
+
+    # ============================================
+    # Few-shot v2 Task Management
+    # ============================================
+
+    def get_fewshot_v2_status(self) -> Optional[Dict[str, Any]]:
+        """Get status of all few-shot v2 tasks."""
+        try:
+            resp = requests.get(self._url("/fewshot_v2/tasks"), timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            logger.error(f"Failed to get few-shot v2 status: {e}")
+            return None
+
+    def get_next_fewshot_v2_task(
+        self,
+        k: Optional[int] = None,
+        model: Optional[str] = None,
+        prompt: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get next available few-shot v2 task.
+
+        Args:
+            k: Filter by k value (1, 3, or 5)
+            model: Filter by model (llama8b, llama3b, mistral)
+            prompt: Filter by prompt ID (1-8)
+        """
+        try:
+            params = {"worker_id": self.worker_id}
+            if k is not None:
+                params["k"] = k
+            if model is not None:
+                params["model"] = model
+            if prompt is not None:
+                params["prompt"] = prompt
+
+            resp = requests.get(
+                self._url("/fewshot_v2/tasks/next"),
+                params=params,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("success"):
+                return data.get("task")
+            return None
+
+        except requests.RequestException as e:
+            logger.error(f"Failed to get next few-shot v2 task: {e}")
+            return None
+
+    def complete_fewshot_v2_task(self, task_id: str, summary: Dict[str, Any]) -> bool:
+        """Mark few-shot v2 task as completed."""
+        try:
+            resp = requests.post(
+                self._url(f"/fewshot_v2/tasks/{task_id}/complete"),
+                params={"worker_id": self.worker_id},
+                json=summary,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            logger.error(f"Failed to complete few-shot v2 task: {e}")
+            return False
+
+    def fail_fewshot_v2_task(self, task_id: str, error_message: str) -> bool:
+        """Mark few-shot v2 task as failed."""
+        try:
+            resp = requests.post(
+                self._url(f"/fewshot_v2/tasks/{task_id}/fail"),
+                params={"worker_id": self.worker_id, "error": error_message},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            logger.error(f"Failed to mark few-shot v2 task as failed: {e}")
+            return False
+
+    def get_fewshot_v2_summary(self) -> Optional[Dict[str, Any]]:
+        """Get summary of completed few-shot v2 results."""
+        try:
+            resp = requests.get(self._url("/fewshot_v2/summary"), timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            logger.error(f"Failed to get few-shot v2 summary: {e}")
+            return None

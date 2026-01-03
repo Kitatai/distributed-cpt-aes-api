@@ -2,8 +2,13 @@
 """
 Few-shot worker for distributed CPT-AES experiments.
 
-Loads pre-trained checkpoints and evaluates using few-shot prompting.
-Evaluates at epoch 0 (baseline) and best_epoch (from zero-shot analysis).
+Experiment flow:
+1. Use 3 examples from 13 samples as few-shot examples
+2. Use remaining 10 samples as dev data for epoch selection
+3. For each epoch (0-30), score dev samples with few-shot prompting
+4. Select best epoch by MSE on dev data (earliest if tie)
+5. Score 10% of remaining data with best epoch checkpoint
+6. Calculate QWK and Spearman correlation
 """
 
 import os
@@ -15,10 +20,12 @@ import tempfile
 import zipfile
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
+import gc
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 
 # Setup logging
 logging.basicConfig(
@@ -62,7 +69,7 @@ def run_fewshot_experiment(
     Run few-shot experiment for a single task.
 
     Args:
-        task_config: Task configuration with best_epoch, sample_ids, example_ids
+        task_config: Task configuration with sample_ids, example_ids
         data_path: Path to ASAP data
         checkpoints_dir: Path to checkpoints directory
         output_dir: Path to save results
@@ -71,7 +78,7 @@ def run_fewshot_experiment(
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
     from scipy.stats import spearmanr
-    from sklearn.metrics import cohen_kappa_score
+    from sklearn.metrics import cohen_kappa_score, mean_squared_error
 
     from config import ASAP_SCORE_RANGES
     from models.prompts_fewshot import (
@@ -82,17 +89,19 @@ def run_fewshot_experiment(
     task_id = task_config["task_id"]
     prompt_id = task_config["prompt_id"]
     model_name = task_config["model_name"]
-    best_epoch = task_config["best_epoch"]
-    sample_ids = set(task_config["sample_ids"])
-    example_ids = task_config["example_ids"]
+    model_short = task_config.get("model_short_name", "llama8b")
+    sample_ids = set(task_config["sample_ids"])  # All 10 samples
+    example_ids = set(task_config["example_ids"])  # 3 few-shot examples
+    dev_ids = sample_ids - example_ids  # 7 dev samples
+    max_epochs = 30
 
     y_min, y_max = ASAP_SCORE_RANGES[prompt_id]
 
     logger.info(f"Task: {task_id}")
     logger.info(f"Prompt: {prompt_id}, Model: {model_name}")
-    logger.info(f"Best epoch: {best_epoch}")
-    logger.info(f"Sample IDs (excluded): {task_config['sample_ids']}")
-    logger.info(f"Example IDs (few-shot): {example_ids}")
+    logger.info(f"Sample IDs (10): {task_config['sample_ids']}")
+    logger.info(f"Example IDs (3 few-shot): {task_config['example_ids']}")
+    logger.info(f"Dev IDs (7): {sorted(dev_ids)}")
 
     # Load ASAP data
     logger.info(f"Loading ASAP data from {data_path}")
@@ -112,14 +121,17 @@ def run_fewshot_experiment(
     ]
     logger.info(f"Prepared {len(fewshot_examples)} few-shot examples")
 
-    # Prepare evaluation essays (exclude all sample_ids)
-    eval_df = prompt_df[~prompt_df['essay_id'].isin(sample_ids)]
+    # Prepare dev data for epoch selection
+    dev_df = prompt_df[prompt_df['essay_id'].isin(dev_ids)]
+    logger.info(f"Dev data: {len(dev_df)} essays for epoch selection")
 
-    # Optional: sample a fraction of evaluation essays for quick testing
-    eval_sample_ratio = task_config.get("eval_sample_ratio", 1.0)
-    if eval_sample_ratio < 1.0:
-        eval_df = eval_df.sample(frac=eval_sample_ratio, random_state=42)
-    logger.info(f"Evaluation essays: {len(eval_df)} (ratio: {eval_sample_ratio})")
+    # Prepare evaluation essays (exclude all sample_ids)
+    # Use 10% of total essays (including dev) for evaluation
+    eval_full_df = prompt_df[~prompt_df['essay_id'].isin(sample_ids)]
+    total_essays = len(prompt_df)  # Total including dev
+    eval_size = int(total_essays * 0.1)
+    eval_df = eval_full_df.sample(n=min(eval_size, len(eval_full_df)), random_state=42)
+    logger.info(f"Evaluation essays: {len(eval_df)} (10% of {total_essays} total)")
 
     # Load tokenizer
     logger.info(f"Loading tokenizer: {model_name}")
@@ -149,7 +161,7 @@ def run_fewshot_experiment(
         model.eval()
         results = []
 
-        for idx, row in essays_df.iterrows():
+        for idx, row in tqdm(essays_df.iterrows(), total=len(essays_df), desc=desc):
             essay_id = int(row['essay_id'])
             essay_text = row['essay']
             y_true = int(row['domain1_score'])
@@ -203,10 +215,13 @@ def run_fewshot_experiment(
                 'generated_text': generated_text[:50],
             })
 
-            if len(results) % 50 == 0:
-                logger.info(f"  {desc}: {len(results)}/{len(essays_df)} scored")
-
         return results
+
+    def calculate_mse(results: List[dict]) -> float:
+        """Calculate MSE."""
+        y_true = np.array([r['y_true'] for r in results])
+        y_pred = np.array([r['y_hat_greedy'] for r in results])
+        return float(mean_squared_error(y_true, y_pred))
 
     def calculate_metrics(results: List[dict]) -> dict:
         """Calculate QWK and Spearman."""
@@ -216,33 +231,52 @@ def run_fewshot_experiment(
         qwk = float(cohen_kappa_score(y_true, y_pred, weights='quadratic'))
         spearman, _ = spearmanr(y_true, y_pred)
         spearman = float(spearman) if not np.isnan(spearman) else 0.0
+        mse = float(mean_squared_error(y_true, y_pred))
 
         return {
             'qwk': qwk,
             'spearman': spearman,
+            'mse': mse,
             'n_samples': len(results),
         }
 
-    results_summary = {
-        'task_id': task_id,
-        'prompt_id': prompt_id,
-        'model_name': model_name,
-        'best_epoch': best_epoch,
-        'n_examples': len(fewshot_examples),
-        'n_eval': len(eval_df),
-        'example_ids': example_ids,
-    }
+    def load_model_with_lora(base_model, epoch: int) -> Tuple[any, bool]:
+        """Load LoRA adapter for given epoch. Returns (model, success)."""
+        if epoch == 0:
+            return base_model, True
+
+        zeroshot_task_id = f"prompt{prompt_id}_{model_short}"
+        checkpoint_path = checkpoints_dir / zeroshot_task_id / f"epoch_{epoch}" / "adapter.zip"
+
+        if not checkpoint_path.exists():
+            logger.warning(f"Checkpoint not found: {checkpoint_path}")
+            return base_model, False
+
+        # Extract and load adapter
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            with zipfile.ZipFile(checkpoint_path, 'r') as zf:
+                zf.extractall(tmp_path)
+
+            model_with_lora = PeftModel.from_pretrained(base_model, str(tmp_path), is_trainable=False)
+            return model_with_lora, True
 
     # Create output directory
     task_output_dir = output_dir / task_id
     task_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Evaluate at epoch 0 (baseline model, no LoRA)
-    logger.info("=" * 50)
-    logger.info("Evaluating at epoch 0 (baseline)")
-    logger.info("=" * 50)
+    # ========================================
+    # Phase 1: Evaluate all epochs on dev data
+    # ========================================
+    logger.info("=" * 60)
+    logger.info(f"Phase 1: Evaluating all epochs on dev data ({len(dev_df)} samples)")
+    logger.info("=" * 60)
 
-    model_epoch0 = AutoModelForCausalLM.from_pretrained(
+    epoch_mse_results = {}
+
+    # Load base model once
+    logger.info("Loading base model...")
+    base_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16,
         device_map="cuda",
@@ -250,29 +284,127 @@ def run_fewshot_experiment(
         attn_implementation=attn_impl,
     )
 
-    results_epoch0 = score_essays_fewshot(model_epoch0, eval_df, "Epoch 0")
+    for epoch in range(0, max_epochs + 1):
+        logger.info(f"Evaluating epoch {epoch} on dev data...")
+
+        if epoch == 0:
+            # Use base model directly for epoch 0
+            model = base_model
+        else:
+            # Load LoRA adapter
+            zeroshot_task_id = f"prompt{prompt_id}_{model_short}"
+            checkpoint_path = checkpoints_dir / zeroshot_task_id / f"epoch_{epoch}" / "adapter.zip"
+
+            if not checkpoint_path.exists():
+                logger.warning(f"Skipping epoch {epoch} - checkpoint not found")
+                continue
+
+            # Extract and load adapter
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_path = Path(tmp_dir)
+                with zipfile.ZipFile(checkpoint_path, 'r') as zf:
+                    zf.extractall(tmp_path)
+
+                model = PeftModel.from_pretrained(base_model, str(tmp_path), is_trainable=False)
+
+        # Score dev data
+        dev_results = score_essays_fewshot(model, dev_df, f"Epoch {epoch} dev")
+        mse = calculate_mse(dev_results)
+        epoch_mse_results[epoch] = {
+            'mse': mse,
+            'results': dev_results,
+        }
+
+        logger.info(f"  Epoch {epoch}: MSE = {mse:.4f}")
+
+        # Clean up LoRA model (but keep base_model)
+        if epoch > 0:
+            # Unload adapter to restore base_model
+            base_model = model.unload()
+            del model
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    # Clean up base model after Phase 1
+    del base_model
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # ========================================
+    # Phase 2: Select best epoch (lowest MSE, earliest if tie)
+    # ========================================
+    logger.info("=" * 60)
+    logger.info("Phase 2: Selecting best epoch")
+    logger.info("=" * 60)
+
+    # Find best epoch
+    best_epoch = 0
+    best_mse = float('inf')
+
+    for epoch in sorted(epoch_mse_results.keys()):
+        mse = epoch_mse_results[epoch]['mse']
+        if mse < best_mse:
+            best_mse = mse
+            best_epoch = epoch
+
+    logger.info(f"Best epoch: {best_epoch} (MSE = {best_mse:.4f})")
+
+    # Log all epoch MSEs
+    logger.info("All epoch MSEs:")
+    for epoch in sorted(epoch_mse_results.keys()):
+        marker = " <-- BEST" if epoch == best_epoch else ""
+        logger.info(f"  Epoch {epoch}: MSE = {epoch_mse_results[epoch]['mse']:.4f}{marker}")
+
+    # ========================================
+    # Phase 3: Evaluate on full test data
+    # ========================================
+    logger.info("=" * 60)
+    logger.info("Phase 3: Evaluating on full test data")
+    logger.info("=" * 60)
+
+    results_summary = {
+        'task_id': task_id,
+        'prompt_id': prompt_id,
+        'model_name': model_name,
+        'model_short_name': model_short,
+        'n_fewshot_examples': len(fewshot_examples),
+        'n_dev': len(dev_df),
+        'n_eval': len(eval_df),
+        'example_ids': list(example_ids),
+        'dev_ids': list(dev_ids),
+        'epoch_mse': {str(e): epoch_mse_results[e]['mse'] for e in epoch_mse_results},
+        'selected_epoch': best_epoch,
+        'selected_epoch_mse': best_mse,
+    }
+
+    # Evaluate epoch 0 on full test data
+    logger.info("Evaluating epoch 0 on full test data...")
+    base_model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.bfloat16,
+        device_map="cuda",
+        trust_remote_code=True,
+        attn_implementation=attn_impl,
+    )
+
+    results_epoch0 = score_essays_fewshot(base_model, eval_df, "Epoch 0 full")
     metrics_epoch0 = calculate_metrics(results_epoch0)
 
     logger.info(f"Epoch 0: QWK={metrics_epoch0['qwk']:.4f}, Spearman={metrics_epoch0['spearman']:.4f}")
 
-    # Save epoch 0 results
     save_csv(results_epoch0, task_output_dir / "predictions_epoch_0.csv")
     save_json({'fewshot': metrics_epoch0}, task_output_dir / "metrics_epoch_0.json")
-
     results_summary['epoch_0'] = metrics_epoch0
 
-    # Clean up
-    del model_epoch0
+    del base_model
+    gc.collect()
     torch.cuda.empty_cache()
 
-    # Evaluate at best_epoch (if not 0)
+    # Evaluate best epoch on full test data (if different from 0)
     if best_epoch > 0:
-        logger.info("=" * 50)
-        logger.info(f"Evaluating at epoch {best_epoch} (best)")
-        logger.info("=" * 50)
+        logger.info(f"Evaluating epoch {best_epoch} on full test data...")
 
-        # Load base model
-        model_best = AutoModelForCausalLM.from_pretrained(
+        base_model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16,
             device_map="cuda",
@@ -280,60 +412,44 @@ def run_fewshot_experiment(
             attn_implementation=attn_impl,
         )
 
-        # Load LoRA adapter
-        zeroshot_task_id = f"prompt{prompt_id}_llama8b"
-        checkpoint_path = checkpoints_dir / zeroshot_task_id / f"epoch_{best_epoch}" / "adapter.zip"
+        model_best, success = load_model_with_lora(base_model, best_epoch)
 
-        if checkpoint_path.exists():
-            # Extract adapter
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_path = Path(tmp_dir)
-                with zipfile.ZipFile(checkpoint_path, 'r') as zf:
-                    zf.extractall(tmp_path)
+        if success:
+            results_best = score_essays_fewshot(model_best, eval_df, f"Epoch {best_epoch} full")
+            metrics_best = calculate_metrics(results_best)
 
-                # Load LoRA
-                model_best = PeftModel.from_pretrained(model_best, str(tmp_path), is_trainable=False)
-                logger.info(f"Loaded LoRA adapter from {checkpoint_path}")
+            logger.info(f"Epoch {best_epoch}: QWK={metrics_best['qwk']:.4f}, Spearman={metrics_best['spearman']:.4f}")
+
+            save_csv(results_best, task_output_dir / f"predictions_epoch_{best_epoch}.csv")
+            save_json({'fewshot': metrics_best}, task_output_dir / f"metrics_epoch_{best_epoch}.json")
+            results_summary['best_epoch_metrics'] = metrics_best
         else:
-            logger.warning(f"Checkpoint not found: {checkpoint_path}")
-            logger.warning("Using base model for best epoch")
+            results_summary['best_epoch_metrics'] = metrics_epoch0
 
-        results_best = score_essays_fewshot(model_best, eval_df, f"Epoch {best_epoch}")
-        metrics_best = calculate_metrics(results_best)
-
-        logger.info(f"Epoch {best_epoch}: QWK={metrics_best['qwk']:.4f}, Spearman={metrics_best['spearman']:.4f}")
-
-        # Save best epoch results
-        save_csv(results_best, task_output_dir / f"predictions_epoch_{best_epoch}.csv")
-        save_json({'fewshot': metrics_best}, task_output_dir / f"metrics_epoch_{best_epoch}.json")
-
-        results_summary['best_epoch_metrics'] = metrics_best
-
-        # Calculate improvement
-        results_summary['improvement'] = {
-            'qwk': metrics_best['qwk'] - metrics_epoch0['qwk'],
-            'spearman': metrics_best['spearman'] - metrics_epoch0['spearman'],
-        }
-
-        # Clean up
         del model_best
+        del base_model
+        gc.collect()
         torch.cuda.empty_cache()
     else:
-        # best_epoch is 0, no improvement
         results_summary['best_epoch_metrics'] = metrics_epoch0
-        results_summary['improvement'] = {'qwk': 0.0, 'spearman': 0.0}
+
+    # Calculate improvement
+    results_summary['improvement'] = {
+        'qwk': results_summary['best_epoch_metrics']['qwk'] - metrics_epoch0['qwk'],
+        'spearman': results_summary['best_epoch_metrics']['spearman'] - metrics_epoch0['spearman'],
+    }
 
     # Save summary
     results_summary['completed_at'] = datetime.now().isoformat()
     save_json(results_summary, task_output_dir / "summary.json")
 
-    logger.info("=" * 50)
+    logger.info("=" * 60)
     logger.info(f"Task {task_id} completed")
-    logger.info(f"Epoch 0:    QWK={results_summary['epoch_0']['qwk']:.4f}, Spearman={results_summary['epoch_0']['spearman']:.4f}")
-    if best_epoch > 0:
-        logger.info(f"Epoch {best_epoch}: QWK={results_summary['best_epoch_metrics']['qwk']:.4f}, Spearman={results_summary['best_epoch_metrics']['spearman']:.4f}")
-        logger.info(f"Improvement: QWK={results_summary['improvement']['qwk']:+.4f}, Spearman={results_summary['improvement']['spearman']:+.4f}")
-    logger.info("=" * 50)
+    logger.info(f"Selected epoch: {best_epoch} (MSE on dev: {best_mse:.4f})")
+    logger.info(f"Epoch 0:         QWK={metrics_epoch0['qwk']:.4f}, Spearman={metrics_epoch0['spearman']:.4f}")
+    logger.info(f"Epoch {best_epoch}:        QWK={results_summary['best_epoch_metrics']['qwk']:.4f}, Spearman={results_summary['best_epoch_metrics']['spearman']:.4f}")
+    logger.info(f"Improvement:     QWK={results_summary['improvement']['qwk']:+.4f}, Spearman={results_summary['improvement']['spearman']:+.4f}")
+    logger.info("=" * 60)
 
     return results_summary
 
@@ -396,7 +512,11 @@ def main():
             )
         except Exception as e:
             logger.exception(f"Task {task_id} failed: {e}")
-            continue
+        finally:
+            # Force cleanup between tasks
+            import torch
+            gc.collect()
+            torch.cuda.empty_cache()
 
     logger.info("\nAll tasks completed")
 
