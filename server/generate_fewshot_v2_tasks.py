@@ -22,6 +22,8 @@ def main():
                         help="Number of patterns to use (default: 10)")
     parser.add_argument("--k-values", type=str, default="1,3,5",
                         help="Comma-separated k values for few-shot (default: 1,3,5)")
+    parser.add_argument("--n-dev", type=int, default=10,
+                        help="Number of dev samples for epoch selection (default: 10)")
     parser.add_argument("--data-dir", type=str, default=None,
                         help="Base data directory (default: data)")
     parser.add_argument("--output", type=str, default=None,
@@ -81,7 +83,7 @@ def main():
 
                     pattern = patterns[prompt_key][pattern_idx]
                     test_ids = pattern['test_ids']
-                    dev_ids = pattern['dev_ids']
+                    dev_ids = pattern['dev_ids'][:args.n_dev]  # Limit to n_dev samples
                     fewshot_ids = pattern['fewshot_ids']
 
                     # Use first k examples from fewshot_ids

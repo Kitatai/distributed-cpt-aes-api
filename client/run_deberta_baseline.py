@@ -46,13 +46,16 @@ ASAP_SCORE_RANGES = {
 }
 
 # Train:Val split configurations
+# Using fewshot_ids (5) + dev_ids[:7] (7) = 12 samples total
 SPLIT_CONFIGS = [
-    (5, 10),   # Same as few-shot: 5 train, 10 val
-    (7, 8),
-    (9, 6),
-    (11, 4),
-    (13, 2),
+    (5, 7),    # 5 train, 7 val
+    (7, 5),    # 7 train, 5 val
+    (9, 3),    # 9 train, 3 val
+    (11, 1),   # 11 train, 1 val
 ]
+
+# Max dev samples to use for epoch selection
+MAX_DEV_SAMPLES = 7
 
 
 class EssayDataset(Dataset):
@@ -203,9 +206,9 @@ def run_experiment(
     # Get IDs
     test_ids = pattern['test_ids']
     fewshot_ids = pattern['fewshot_ids']  # 5 samples
-    dev_ids = pattern['dev_ids']  # 10 samples
+    dev_ids = pattern['dev_ids'][:MAX_DEV_SAMPLES]  # Use first 7 samples only
 
-    # Combine fewshot + dev for train/val pool (15 total)
+    # Combine fewshot + dev for train/val pool (12 total)
     pool_ids = fewshot_ids + dev_ids
     train_ids = pool_ids[:n_train]
     val_ids = pool_ids[n_train:n_train + n_val]
@@ -330,29 +333,29 @@ def main():
     parser.add_argument("--pattern", type=int, default=None, help="Specific pattern (0-9)")
     parser.add_argument("--split", type=str, default=None, help="Specific split ratio (e.g., '5:10')")
     parser.add_argument("--max-epochs", type=int, default=50, help="Max training epochs")
-    parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--output", type=str, default=None, help="Output directory")
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent
-    data_dir = script_dir / "data"
+    server_data_dir = script_dir.parent / "server" / "data"
 
     # Output directory
     if args.output:
         output_dir = Path(args.output)
     else:
-        output_dir = data_dir / "results_deberta_baseline"
+        output_dir = server_data_dir / "results_deberta_baseline"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load patterns
-    patterns_path = data_dir / "sample_patterns_v2.json"
+    patterns_path = server_data_dir / "sample_patterns_v2.json"
     logger.info(f"Loading patterns from {patterns_path}")
     with open(patterns_path) as f:
         patterns_data = json.load(f)
     patterns = patterns_data['patterns']
 
     # Load ASAP data
-    asap_path = data_dir / "asap" / "training_set_rel3.tsv"
+    asap_path = server_data_dir / "asap" / "training_set_rel3.tsv"
     logger.info(f"Loading ASAP data from {asap_path}")
     df = pd.read_csv(asap_path, sep='\t', encoding='latin-1')
 

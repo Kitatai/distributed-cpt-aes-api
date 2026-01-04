@@ -81,6 +81,8 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate zero-shot with new patterns")
     parser.add_argument("--n-patterns", type=int, default=10,
                         help="Number of patterns to evaluate (default: 10)")
+    parser.add_argument("--n-dev", type=int, default=10,
+                        help="Number of dev samples to use for epoch selection (default: 10, max: 10)")
     parser.add_argument("--output", type=str, default=None,
                         help="Output directory (default: data/results_zeroshot_v2)")
     parser.add_argument("--max-epochs", type=int, default=30,
@@ -125,7 +127,7 @@ def main():
             for pattern_idx in range(args.n_patterns):
                 pattern = patterns[prompt_key][pattern_idx]
                 test_ids = pattern['test_ids']
-                dev_ids = pattern['dev_ids']
+                dev_ids = pattern['dev_ids'][:args.n_dev]  # Use first n_dev samples
 
                 # Evaluate all epochs on dev_ids to find best epoch
                 epoch_mse = {}

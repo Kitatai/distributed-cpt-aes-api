@@ -20,14 +20,16 @@ echo "=== DeBERTa Baseline Experiment ==="
 echo "Log file: $LOG_FILE"
 echo ""
 
-# Check data
-if [ ! -f "data/sample_patterns_v2.json" ]; then
-    echo "Error: data/sample_patterns_v2.json not found"
+# Check data (in server directory)
+SERVER_DATA="$SCRIPT_DIR/../server/data"
+
+if [ ! -f "$SERVER_DATA/sample_patterns_v2.json" ]; then
+    echo "Error: $SERVER_DATA/sample_patterns_v2.json not found"
     exit 1
 fi
 
-if [ ! -f "data/asap/training_set_rel3.tsv" ]; then
-    echo "Error: ASAP data not found"
+if [ ! -f "$SERVER_DATA/asap/training_set_rel3.tsv" ]; then
+    echo "Error: ASAP data not found in $SERVER_DATA/asap/"
     exit 1
 fi
 
