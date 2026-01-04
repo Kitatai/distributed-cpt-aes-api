@@ -1140,10 +1140,14 @@ async def get_fewshot_v2_summary():
                 best_qwks = [r["best_epoch_metrics"]["qwk"] for r in model_results if "best_epoch_metrics" in r]
 
                 if e0_qwks and best_qwks:
+                    delta_qwks = [b - e for b, e in zip(best_qwks, e0_qwks)]
                     summary["by_k_model"][k][model] = {
                         "e0_qwk": float(np.mean(e0_qwks)),
+                        "e0_qwk_std": float(np.std(e0_qwks)),
                         "best_qwk": float(np.mean(best_qwks)),
-                        "delta_qwk": float(np.mean(best_qwks) - np.mean(e0_qwks)),
+                        "best_qwk_std": float(np.std(best_qwks)),
+                        "delta_qwk": float(np.mean(delta_qwks)),
+                        "delta_qwk_std": float(np.std(delta_qwks)),
                         "n_tasks": len(model_results),
                     }
 
