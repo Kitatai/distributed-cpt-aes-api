@@ -258,84 +258,86 @@ def run_fewshot_v2_experiment(
     # ========================================
     # Phase 1: Evaluate all epochs on dev data
     # ========================================
-    logger.info("=" * 60)
-    logger.info(f"Phase 1: Epoch selection using dev data ({len(dev_df)} samples)")
-    logger.info("=" * 60)
-
+    zeroshot_task_id = f"prompt{prompt_id}_{model_short}"
     epoch_mse_results = {}
 
-    # Load base model once
-    logger.info("Loading base model...")
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda",
-        trust_remote_code=True,
-        attn_implementation=attn_impl,
-    )
-
-    zeroshot_task_id = f"prompt{prompt_id}_{model_short}"
-
-    for epoch in range(0, max_epochs + 1):
-        # Check for shutdown request
-        if _state.shutdown_requested:
-            logger.info("Shutdown requested, stopping early")
-            break
-
-        logger.info(f"Evaluating epoch {epoch}/{max_epochs} on dev...")
-
-        if epoch == 0:
-            model = base_model
-        else:
-            # Download checkpoint from server
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_path = Path(tmp_dir)
-
-                if not client.check_checkpoint(zeroshot_task_id, epoch):
-                    logger.warning(f"Skipping epoch {epoch} - checkpoint not found on server")
-                    continue
-
-                success = client.download_checkpoint(zeroshot_task_id, epoch, tmp_path)
-                if not success:
-                    logger.warning(f"Failed to download checkpoint for epoch {epoch}")
-                    continue
-
-                model = PeftModel.from_pretrained(base_model, str(tmp_path), is_trainable=False)
-
-        # Score dev data
-        dev_results = score_essays_fewshot(model, dev_df, f"E{epoch} dev", show_progress=False)
-
-        y_true = np.array([r['y_true'] for r in dev_results])
-        y_pred = np.array([r['y_pred'] for r in dev_results])
-        mse = float(mean_squared_error(y_true, y_pred))
-
-        epoch_mse_results[epoch] = mse
-        logger.info(f"  Epoch {epoch}: MSE = {mse:.4f}")
-
-        # Clean up LoRA model
-        if epoch > 0:
-            base_model = model.unload()
-            del model
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    # Clean up base model
-    del base_model
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    if not epoch_mse_results:
-        raise RuntimeError("No epochs could be evaluated")
-
-    # ========================================
-    # Phase 2: Select best epoch (or use fixed epoch)
-    # ========================================
-    logger.info("=" * 60)
+    # Skip epoch selection in fixed epoch mode
     if fixed_epoch is not None:
-        logger.info(f"Phase 2: Using fixed epoch {fixed_epoch}")
+        logger.info("=" * 60)
+        logger.info(f"Fixed epoch mode: skipping epoch selection, using e={fixed_epoch}")
+        logger.info("=" * 60)
         best_epoch = fixed_epoch
-        best_mse = epoch_mse_results.get(fixed_epoch, 0.0)
+        best_mse = 0.0
     else:
+        logger.info("=" * 60)
+        logger.info(f"Phase 1: Epoch selection using dev data ({len(dev_df)} samples)")
+        logger.info("=" * 60)
+
+        # Load base model once
+        logger.info("Loading base model...")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda",
+            trust_remote_code=True,
+            attn_implementation=attn_impl,
+        )
+
+        for epoch in range(0, max_epochs + 1):
+            # Check for shutdown request
+            if _state.shutdown_requested:
+                logger.info("Shutdown requested, stopping early")
+                break
+
+            logger.info(f"Evaluating epoch {epoch}/{max_epochs} on dev...")
+
+            if epoch == 0:
+                model = base_model
+            else:
+                # Download checkpoint from server
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tmp_path = Path(tmp_dir)
+
+                    if not client.check_checkpoint(zeroshot_task_id, epoch):
+                        logger.warning(f"Skipping epoch {epoch} - checkpoint not found on server")
+                        continue
+
+                    success = client.download_checkpoint(zeroshot_task_id, epoch, tmp_path)
+                    if not success:
+                        logger.warning(f"Failed to download checkpoint for epoch {epoch}")
+                        continue
+
+                    model = PeftModel.from_pretrained(base_model, str(tmp_path), is_trainable=False)
+
+            # Score dev data
+            dev_results = score_essays_fewshot(model, dev_df, f"E{epoch} dev", show_progress=False)
+
+            y_true = np.array([r['y_true'] for r in dev_results])
+            y_pred = np.array([r['y_pred'] for r in dev_results])
+            mse = float(mean_squared_error(y_true, y_pred))
+
+            epoch_mse_results[epoch] = mse
+            logger.info(f"  Epoch {epoch}: MSE = {mse:.4f}")
+
+            # Clean up LoRA model
+            if epoch > 0:
+                base_model = model.unload()
+                del model
+                gc.collect()
+                torch.cuda.empty_cache()
+
+        # Clean up base model
+        del base_model
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        if not epoch_mse_results:
+            raise RuntimeError("No epochs could be evaluated")
+
+        # ========================================
+        # Phase 2: Select best epoch
+        # ========================================
+        logger.info("=" * 60)
         logger.info("Phase 2: Selecting best epoch")
         # Find best epoch (lowest MSE, earliest if tie)
         best_epoch = min(epoch_mse_results.keys(), key=lambda e: (epoch_mse_results[e], e))
