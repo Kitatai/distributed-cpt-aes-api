@@ -1375,6 +1375,29 @@ async def get_fewshot_v2_fixed_summary(epoch: int):
     return {"epoch": epoch, "n_results": len(results), "summary": summary}
 
 
+# ============================================
+# E0 Results Reuse
+# ============================================
+
+@app.get("/e0_results/{results_dir}/{task_id}")
+async def get_e0_results(results_dir: str, task_id: str):
+    """Get E0 results from a previous experiment's results directory."""
+    results_path = DATA_DIR / results_dir / task_id / "summary.json"
+    if not results_path.exists():
+        raise HTTPException(status_code=404, detail=f"E0 results not found for {task_id} in {results_dir}")
+
+    with open(results_path) as f:
+        summary = json.load(f)
+
+    if "epoch_0" not in summary:
+        raise HTTPException(status_code=404, detail=f"No epoch_0 data in summary for {task_id}")
+
+    return {
+        "task_id": task_id,
+        "epoch_0": summary["epoch_0"],
+    }
+
+
 def run_server():
     """Run the server."""
     import uvicorn

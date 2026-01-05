@@ -625,3 +625,32 @@ class APIClient:
         except requests.RequestException as e:
             logger.error(f"Failed to mark few-shot v2 e{epoch} task as failed: {e}")
             return False
+
+    # ============================================
+    # E0 Results Reuse
+    # ============================================
+
+    def get_e0_results(self, results_dir: str, task_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get E0 results from a previous experiment's results directory.
+
+        Args:
+            results_dir: Name of the results directory (e.g., "results_fewshot_v2_dev10")
+            task_id: Task ID to get E0 results for
+
+        Returns:
+            Dictionary with epoch_0 metrics, or None if not found
+        """
+        try:
+            resp = requests.get(
+                self._url(f"/e0_results/{results_dir}/{task_id}"),
+                timeout=30,
+            )
+            if resp.status_code == 404:
+                logger.warning(f"E0 results not found for {task_id} in {results_dir}")
+                return None
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            logger.error(f"Failed to get E0 results: {e}")
+            return None

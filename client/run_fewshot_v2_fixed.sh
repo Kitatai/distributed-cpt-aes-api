@@ -6,6 +6,7 @@
 #   ./run_fewshot_v2_fixed.sh --server http://SERVER_IP:8000 --epoch 20
 #   ./run_fewshot_v2_fixed.sh --server http://192.168.100.10:8000 --epoch 20 --k 1
 #   ./run_fewshot_v2_fixed.sh --server http://192.168.100.10:8000 --epoch 20 --model llama8b
+#   ./run_fewshot_v2_fixed.sh --server http://192.168.100.10:8000 --epoch 20 --reuse-e0-from results_fewshot_v2_dev10
 
 set -e
 
@@ -15,6 +16,7 @@ cd "$SCRIPT_DIR"
 # Parse arguments
 SERVER=""
 EPOCH=""
+REUSE_E0=""
 EXTRA_ARGS=""
 
 while [[ $# -gt 0 ]]; do
@@ -25,6 +27,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --epoch)
             EPOCH="$2"
+            shift 2
+            ;;
+        --reuse-e0-from)
+            REUSE_E0="$2"
             shift 2
             ;;
         --k)
@@ -72,11 +78,18 @@ LOG_FILE="$LOG_DIR/fewshot_v2_e${EPOCH}_${TIMESTAMP}.log"
 echo "=== Few-shot v2 Fixed Epoch Worker (e=$EPOCH) ==="
 echo "Server: $SERVER"
 echo "Fixed epoch: $EPOCH"
+if [ -n "$REUSE_E0" ]; then
+    echo "Reuse E0 from: $REUSE_E0"
+fi
 echo "Log file: $LOG_FILE"
 echo ""
 
 # Build command
-CMD="uv run python worker_fewshot_v2_distributed.py --server $SERVER --fixed-epoch $EPOCH $EXTRA_ARGS"
+CMD="uv run python worker_fewshot_v2_distributed.py --server $SERVER --fixed-epoch $EPOCH"
+if [ -n "$REUSE_E0" ]; then
+    CMD="$CMD --reuse-e0-from $REUSE_E0"
+fi
+CMD="$CMD $EXTRA_ARGS"
 
 echo "Running: $CMD"
 echo "Starting in background..."

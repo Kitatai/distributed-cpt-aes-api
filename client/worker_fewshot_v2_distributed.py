@@ -16,6 +16,7 @@ Uses new sample_patterns_v2.json format with explicit:
 
 import os
 import sys
+import json
 import time
 import signal
 import socket
@@ -75,6 +76,7 @@ def run_fewshot_v2_experiment(
     task_config: dict,
     data_path: Path,
     client: APIClient,
+    e0_results_dir_name: Optional[str] = None,
 ):
     """
     Run few-shot v2 experiment for a single task.
@@ -83,6 +85,7 @@ def run_fewshot_v2_experiment(
         task_config: Task configuration with test_ids, dev_ids, example_ids
         data_path: Path to ASAP data file
         client: API client for downloading checkpoints
+        e0_results_dir_name: Name of results directory to reuse E0 from (e.g., "results_fewshot_v2_dev10")
     """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -389,10 +392,18 @@ def run_fewshot_v2_experiment(
             'predictions': results,
         }
 
-    # Evaluate epoch 0
-    logger.info("Evaluating epoch 0 on test...")
-    metrics_e0 = evaluate_epoch_on_test(0, "Test E0")
-    logger.info(f"Epoch 0: QWK={metrics_e0['qwk']:.4f}, Spearman={metrics_e0['spearman']:.4f}")
+    # Evaluate epoch 0 (or reuse from existing results)
+    metrics_e0 = None
+    if e0_results_dir_name is not None:
+        e0_data = client.get_e0_results(e0_results_dir_name, task_id)
+        if e0_data and "epoch_0" in e0_data:
+            metrics_e0 = e0_data["epoch_0"]
+            logger.info(f"Epoch 0 (reused from {e0_results_dir_name}): QWK={metrics_e0['qwk']:.4f}, Spearman={metrics_e0['spearman']:.4f}")
+
+    if metrics_e0 is None:
+        logger.info("Evaluating epoch 0 on test...")
+        metrics_e0 = evaluate_epoch_on_test(0, "Test E0")
+        logger.info(f"Epoch 0: QWK={metrics_e0['qwk']:.4f}, Spearman={metrics_e0['spearman']:.4f}")
 
     # Evaluate best epoch
     if best_epoch > 0:
@@ -488,6 +499,12 @@ def main():
         default=None,
         help="Fixed epoch mode (e.g., --fixed-epoch 20)",
     )
+    parser.add_argument(
+        "--reuse-e0-from",
+        type=str,
+        default=None,
+        help="Reuse E0 results from existing results directory (e.g., results_fewshot_v2_dev10)",
+    )
 
     args = parser.parse_args()
 
@@ -532,6 +549,11 @@ def main():
                    f"{status.get('running', 0)} running, "
                    f"{status.get('completed', 0)} completed")
 
+    # Setup E0 reuse
+    e0_results_dir_name = args.reuse_e0_from
+    if e0_results_dir_name:
+        logger.info(f"E0 results will be reused from server: {e0_results_dir_name}")
+
     # Main loop
     tasks_completed = 0
     consecutive_failures = 0
@@ -575,6 +597,7 @@ def main():
                 task_config=task,
                 data_path=data_path,
                 client=client,
+                e0_results_dir_name=e0_results_dir_name,
             )
 
             # Report completion
