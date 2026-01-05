@@ -603,9 +603,18 @@ async def upload_checkpoint(task_id: str, epoch: int, file: UploadFile = File(..
 
 
 @app.get("/checkpoints/{task_id}/epoch/{epoch}")
-async def download_checkpoint(task_id: str, epoch: int):
-    """Download a checkpoint (adapter) zip file."""
-    zip_path = CHECKPOINTS_DIR / task_id / f"epoch_{epoch}" / "adapter.zip"
+async def download_checkpoint(task_id: str, epoch: int, source: Optional[str] = None):
+    """Download a checkpoint (adapter) zip file.
+
+    Args:
+        source: Optional source directory (e.g., "backup_zeroshot_v1" to use checkpoints from that backup)
+    """
+    if source:
+        checkpoints_dir = DATA_DIR / source / "checkpoints"
+    else:
+        checkpoints_dir = CHECKPOINTS_DIR
+
+    zip_path = checkpoints_dir / task_id / f"epoch_{epoch}" / "adapter.zip"
 
     if not zip_path.exists():
         raise HTTPException(status_code=404, detail=f"Checkpoint not found: {task_id}/epoch_{epoch}")
@@ -618,9 +627,18 @@ async def download_checkpoint(task_id: str, epoch: int):
 
 
 @app.get("/checkpoints/{task_id}/epoch/{epoch}/exists", response_model=CheckpointInfo)
-async def check_checkpoint(task_id: str, epoch: int):
-    """Check if a checkpoint exists."""
-    zip_path = CHECKPOINTS_DIR / task_id / f"epoch_{epoch}" / "adapter.zip"
+async def check_checkpoint(task_id: str, epoch: int, source: Optional[str] = None):
+    """Check if a checkpoint exists.
+
+    Args:
+        source: Optional source directory (e.g., "backup_zeroshot_v1" to use checkpoints from that backup)
+    """
+    if source:
+        checkpoints_dir = DATA_DIR / source / "checkpoints"
+    else:
+        checkpoints_dir = CHECKPOINTS_DIR
+
+    zip_path = checkpoints_dir / task_id / f"epoch_{epoch}" / "adapter.zip"
 
     exists = zip_path.exists()
     size = zip_path.stat().st_size if exists else None

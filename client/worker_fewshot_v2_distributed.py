@@ -77,6 +77,7 @@ def run_fewshot_v2_experiment(
     data_path: Path,
     client: APIClient,
     e0_results_dir_name: Optional[str] = None,
+    checkpoint_source: Optional[str] = None,
 ):
     """
     Run few-shot v2 experiment for a single task.
@@ -86,6 +87,7 @@ def run_fewshot_v2_experiment(
         data_path: Path to ASAP data file
         client: API client for downloading checkpoints
         e0_results_dir_name: Name of results directory to reuse E0 from (e.g., "results_fewshot_v2_dev10")
+        checkpoint_source: Source directory for checkpoints (e.g., "backup_zeroshot_v1")
     """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -247,7 +249,7 @@ def run_fewshot_v2_experiment(
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
 
-            success = client.download_checkpoint(zeroshot_task_id, epoch, tmp_path)
+            success = client.download_checkpoint(zeroshot_task_id, epoch, tmp_path, source=checkpoint_source)
             if not success:
                 logger.warning(f"Checkpoint not found on server: {zeroshot_task_id}/epoch_{epoch}")
                 return base_model, False
@@ -298,11 +300,11 @@ def run_fewshot_v2_experiment(
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_path = Path(tmp_dir)
 
-                    if not client.check_checkpoint(zeroshot_task_id, epoch):
+                    if not client.check_checkpoint(zeroshot_task_id, epoch, source=checkpoint_source):
                         logger.warning(f"Skipping epoch {epoch} - checkpoint not found on server")
                         continue
 
-                    success = client.download_checkpoint(zeroshot_task_id, epoch, tmp_path)
+                    success = client.download_checkpoint(zeroshot_task_id, epoch, tmp_path, source=checkpoint_source)
                     if not success:
                         logger.warning(f"Failed to download checkpoint for epoch {epoch}")
                         continue
@@ -507,6 +509,12 @@ def main():
         default=None,
         help="Reuse E0 results from existing results directory (e.g., results_fewshot_v2_dev10)",
     )
+    parser.add_argument(
+        "--checkpoint-source",
+        type=str,
+        default=None,
+        help="Source directory for checkpoints (e.g., backup_zeroshot_v1)",
+    )
 
     args = parser.parse_args()
 
@@ -556,6 +564,11 @@ def main():
     if e0_results_dir_name:
         logger.info(f"E0 results will be reused from server: {e0_results_dir_name}")
 
+    # Setup checkpoint source
+    checkpoint_source = args.checkpoint_source
+    if checkpoint_source:
+        logger.info(f"Checkpoints will be loaded from: {checkpoint_source}")
+
     # Main loop
     tasks_completed = 0
     consecutive_failures = 0
@@ -600,6 +613,7 @@ def main():
                 data_path=data_path,
                 client=client,
                 e0_results_dir_name=e0_results_dir_name,
+                checkpoint_source=checkpoint_source,
             )
 
             # Report completion

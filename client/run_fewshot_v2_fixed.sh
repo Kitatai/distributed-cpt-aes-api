@@ -7,6 +7,7 @@
 #   ./run_fewshot_v2_fixed.sh --server http://192.168.100.10:8000 --epoch 20 --k 1
 #   ./run_fewshot_v2_fixed.sh --server http://192.168.100.10:8000 --epoch 20 --model llama8b
 #   ./run_fewshot_v2_fixed.sh --server http://192.168.100.10:8000 --epoch 20 --reuse-e0-from results_fewshot_v2_dev10
+#   ./run_fewshot_v2_fixed.sh --server http://SERVER:8000 --epoch 20 --checkpoint-source backup_zeroshot_v1
 
 set -e
 
@@ -17,6 +18,7 @@ cd "$SCRIPT_DIR"
 SERVER=""
 EPOCH=""
 REUSE_E0=""
+CHECKPOINT_SOURCE=""
 EXTRA_ARGS=""
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +33,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --reuse-e0-from)
             REUSE_E0="$2"
+            shift 2
+            ;;
+        --checkpoint-source)
+            CHECKPOINT_SOURCE="$2"
             shift 2
             ;;
         --k)
@@ -81,6 +87,9 @@ echo "Fixed epoch: $EPOCH"
 if [ -n "$REUSE_E0" ]; then
     echo "Reuse E0 from: $REUSE_E0"
 fi
+if [ -n "$CHECKPOINT_SOURCE" ]; then
+    echo "Checkpoint source: $CHECKPOINT_SOURCE"
+fi
 echo "Log file: $LOG_FILE"
 echo ""
 
@@ -88,6 +97,9 @@ echo ""
 CMD="uv run python worker_fewshot_v2_distributed.py --server $SERVER --fixed-epoch $EPOCH"
 if [ -n "$REUSE_E0" ]; then
     CMD="$CMD --reuse-e0-from $REUSE_E0"
+fi
+if [ -n "$CHECKPOINT_SOURCE" ]; then
+    CMD="$CMD --checkpoint-source $CHECKPOINT_SOURCE"
 fi
 CMD="$CMD $EXTRA_ARGS"
 

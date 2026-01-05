@@ -197,7 +197,7 @@ class APIClient:
             logger.error(f"Failed to upload checkpoint: {e}")
             return False
 
-    def download_checkpoint(self, task_id: str, epoch: int, target_dir: Path) -> bool:
+    def download_checkpoint(self, task_id: str, epoch: int, target_dir: Path, source: Optional[str] = None) -> bool:
         """
         Download a checkpoint and extract to target directory.
 
@@ -205,13 +205,16 @@ class APIClient:
             task_id: Task identifier
             epoch: Epoch number
             target_dir: Directory to extract adapter to
+            source: Optional source directory (e.g., "backup_zeroshot_v1")
 
         Returns:
             True if successful
         """
         try:
+            params = {"source": source} if source else {}
             resp = requests.get(
                 self._url(f"/checkpoints/{task_id}/epoch/{epoch}"),
+                params=params,
                 timeout=self.timeout,
                 stream=True,
             )
@@ -224,18 +227,24 @@ class APIClient:
             with zipfile.ZipFile(zip_buffer, 'r') as zf:
                 zf.extractall(target_dir)
 
-            logger.info(f"Downloaded checkpoint: {task_id}/epoch_{epoch}")
+            logger.info(f"Downloaded checkpoint: {task_id}/epoch_{epoch}" + (f" (from {source})" if source else ""))
             return True
 
         except requests.RequestException as e:
             logger.error(f"Failed to download checkpoint: {e}")
             return False
 
-    def check_checkpoint(self, task_id: str, epoch: int) -> bool:
-        """Check if checkpoint exists on server."""
+    def check_checkpoint(self, task_id: str, epoch: int, source: Optional[str] = None) -> bool:
+        """Check if checkpoint exists on server.
+
+        Args:
+            source: Optional source directory (e.g., "backup_zeroshot_v1")
+        """
         try:
+            params = {"source": source} if source else {}
             resp = requests.get(
                 self._url(f"/checkpoints/{task_id}/epoch/{epoch}/exists"),
+                params=params,
                 timeout=30,
             )
             resp.raise_for_status()
