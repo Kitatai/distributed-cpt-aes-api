@@ -24,6 +24,8 @@ def main():
                         help="Comma-separated k values for few-shot (default: 1,3,5)")
     parser.add_argument("--n-dev", type=int, default=10,
                         help="Number of dev samples for epoch selection (default: 10)")
+    parser.add_argument("--fixed-epoch", type=int, default=None,
+                        help="Fixed epoch for evaluation (skip epoch selection)")
     parser.add_argument("--data-dir", type=str, default=None,
                         help="Base data directory (default: data)")
     parser.add_argument("--output", type=str, default=None,
@@ -60,6 +62,8 @@ def main():
     # Output directory
     if args.output:
         output_dir = Path(args.output)
+    elif args.fixed_epoch is not None:
+        output_dir = data_dir / f"tasks_fewshot_v2_e{args.fixed_epoch}"
     else:
         output_dir = data_dir / "tasks_fewshot_v2"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +93,14 @@ def main():
                     # Use first k examples from fewshot_ids
                     example_ids = fewshot_ids[:k]
 
+                    # Determine max_epochs based on fixed_epoch
+                    if args.fixed_epoch is not None:
+                        max_epochs = args.fixed_epoch
+                        fixed_epoch = args.fixed_epoch
+                    else:
+                        max_epochs = exp_config.get("max_epochs", 30)
+                        fixed_epoch = None
+
                     task_config = {
                         "task_id": task_id,
                         "prompt_id": prompt_id,
@@ -105,7 +117,8 @@ def main():
                         "lora_r": exp_config.get("lora_r", 16),
                         "lora_alpha": exp_config.get("lora_alpha", 32),
                         "max_seq_len": exp_config.get("max_seq_len", 2048),
-                        "max_epochs": exp_config.get("max_epochs", 30),
+                        "max_epochs": max_epochs,
+                        "fixed_epoch": fixed_epoch,  # None means use epoch selection
                         # Status
                         "status": "pending",
                         "created_at": datetime.now().isoformat(),
@@ -122,6 +135,10 @@ def main():
     print(f"  Prompts: 1-8")
     print(f"  K values: {k_values}")
     print(f"  Patterns: 0-{args.n_patterns - 1}")
+    if args.fixed_epoch is not None:
+        print(f"  Fixed epoch: {args.fixed_epoch} (no epoch selection)")
+    else:
+        print(f"  Epoch selection: dev MSE (n_dev={args.n_dev})")
 
     # Show example
     print(f"\nExample task: {tasks_created[0]}")

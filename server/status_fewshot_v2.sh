@@ -50,7 +50,7 @@ models = ['llama8b', 'llama3b', 'mistral']
 print('Results by k-shot and model (QWK mean±std):')
 print(f\"{'Model':<10}\", end='')
 for k in k_values:
-    print(f'    {k}-shot E0         {k}-shot Best   ', end='')
+    print(f'   {k}-shot E0        {k}-shot Best   ', end='')
 print()
 print('-' * (10 + 40 * len(k_values)))
 
@@ -64,7 +64,7 @@ for model in models:
             e0_std = m.get('e0_qwk_std', 0)
             best = m['best_qwk']
             best_std = m.get('best_qwk_std', 0)
-            print(f'  {e0:.3f}±{e0_std:.3f}    {best:.3f}±{best_std:.3f}  ', end='')
+            print(f'  {e0:.3f}±{e0_std:.3f}       {best:.3f}±{best_std:.3f}  ', end='')
         else:
             print(f'       -             -        ', end='')
     print()
@@ -78,7 +78,7 @@ for k in k_values:
     if deltas:
         avg_delta = sum(d[0] for d in deltas) / len(deltas)
         avg_std = sum(d[1] for d in deltas) / len(deltas)
-        print(f'              {avg_delta:+.3f}±{avg_std:.3f}       ', end='')
+        print(f'           {avg_delta:+.3f}±{avg_std:.3f}       ', end='')
     else:
         print(f'                  -              ', end='')
 print()

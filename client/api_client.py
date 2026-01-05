@@ -553,3 +553,75 @@ class APIClient:
         except requests.RequestException as e:
             logger.error(f"Failed to get few-shot v2 summary: {e}")
             return None
+
+    # ============================================
+    # Few-shot v2 Fixed Epoch Task Management
+    # ============================================
+
+    def get_fewshot_v2_fixed_status(self, epoch: int) -> Optional[Dict[str, Any]]:
+        """Get status of all few-shot v2 fixed epoch tasks."""
+        try:
+            resp = requests.get(self._url(f"/fewshot_v2_e{epoch}/tasks"), timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            logger.error(f"Failed to get few-shot v2 e{epoch} status: {e}")
+            return None
+
+    def get_next_fewshot_v2_fixed_task(
+        self,
+        epoch: int,
+        k: Optional[int] = None,
+        model: Optional[str] = None,
+        prompt: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get next available few-shot v2 fixed epoch task."""
+        try:
+            params = {"worker_id": self.worker_id}
+            if k is not None:
+                params["k"] = k
+            if model is not None:
+                params["model"] = model
+            if prompt is not None:
+                params["prompt"] = prompt
+
+            resp = requests.get(
+                self._url(f"/fewshot_v2_e{epoch}/tasks/next"),
+                params=params,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        except requests.RequestException as e:
+            logger.error(f"Failed to get next few-shot v2 e{epoch} task: {e}")
+            return None
+
+    def complete_fewshot_v2_fixed_task(self, epoch: int, task_id: str, summary: Dict[str, Any]) -> bool:
+        """Mark few-shot v2 fixed epoch task as completed."""
+        try:
+            resp = requests.post(
+                self._url(f"/fewshot_v2_e{epoch}/tasks/{task_id}/complete"),
+                params={"worker_id": self.worker_id},
+                json=summary,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            logger.error(f"Failed to complete few-shot v2 e{epoch} task: {e}")
+            return False
+
+    def fail_fewshot_v2_fixed_task(self, epoch: int, task_id: str, error_message: str) -> bool:
+        """Mark few-shot v2 fixed epoch task as failed."""
+        try:
+            resp = requests.post(
+                self._url(f"/fewshot_v2_e{epoch}/tasks/{task_id}/fail"),
+                params={"worker_id": self.worker_id, "error": error_message},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            logger.error(f"Failed to mark few-shot v2 e{epoch} task as failed: {e}")
+            return False

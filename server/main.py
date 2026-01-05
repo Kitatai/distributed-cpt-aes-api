@@ -1154,6 +1154,227 @@ async def get_fewshot_v2_summary():
     return {"n_results": len(results), "summary": summary}
 
 
+# ============================================================================
+# Few-shot v2 Fixed Epoch Endpoints (e.g., e20)
+# ============================================================================
+
+def get_fewshot_v2_fixed_dirs(epoch: int):
+    """Get task and result directories for fixed epoch experiment."""
+    tasks_dir = DATA_DIR / f"tasks_fewshot_v2_e{epoch}"
+    results_dir = DATA_DIR / f"results_fewshot_v2_e{epoch}"
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    return tasks_dir, results_dir
+
+
+def get_all_fewshot_v2_fixed_tasks(epoch: int) -> list[dict]:
+    tasks_dir, _ = get_fewshot_v2_fixed_dirs(epoch)
+    tasks = []
+    for task_file in tasks_dir.glob("*.json"):
+        with open(task_file) as f:
+            tasks.append(json.load(f))
+    return sorted(tasks, key=lambda t: t["task_id"])
+
+
+@app.get("/fewshot_v2_e{epoch}/tasks")
+async def get_fewshot_v2_fixed_status(epoch: int):
+    """Get status of all few-shot v2 fixed epoch tasks."""
+    tasks = get_all_fewshot_v2_fixed_tasks(epoch)
+
+    status_counts = {"pending": 0, "running": 0, "completed": 0, "failed": 0}
+    for task in tasks:
+        status = task.get("status", "pending")
+        if status in status_counts:
+            status_counts[status] += 1
+
+    return {
+        "epoch": epoch,
+        "total_tasks": len(tasks),
+        **status_counts,
+        "tasks": tasks,
+    }
+
+
+@app.get("/fewshot_v2_e{epoch}/tasks/next")
+async def get_next_fewshot_v2_fixed_task(
+    epoch: int,
+    worker_id: str = Query(..., description="Worker identifier"),
+    k: Optional[int] = Query(None, description="Filter by k value"),
+    model: Optional[str] = Query(None, description="Filter by model"),
+    prompt: Optional[int] = Query(None, description="Filter by prompt ID"),
+):
+    """Get next available few-shot v2 fixed epoch task."""
+    tasks_dir, _ = get_fewshot_v2_fixed_dirs(epoch)
+    lock = FileLock(str(tasks_dir / ".assign.lock"))
+
+    with lock:
+        tasks = get_all_fewshot_v2_fixed_tasks(epoch)
+
+        for task in tasks:
+            if task.get("status") != "pending":
+                continue
+
+            # Apply filters
+            if k is not None and task.get("k") != k:
+                continue
+            if model is not None and task.get("model_short_name") != model:
+                continue
+            if prompt is not None and task.get("prompt_id") != prompt:
+                continue
+
+            # Assign task
+            task["status"] = "running"
+            task["worker_id"] = worker_id
+            task["started_at"] = datetime.now().isoformat()
+
+            task_file = tasks_dir / f"{task['task_id']}.json"
+            with open(task_file, 'w') as f:
+                json.dump(task, f, indent=2, default=str)
+
+            logger.info(f"[e{epoch}] Task {task['task_id']} assigned to {worker_id}")
+            return task
+
+    return None
+
+
+@app.get("/fewshot_v2_e{epoch}/tasks/{task_id}")
+async def get_fewshot_v2_fixed_task(epoch: int, task_id: str):
+    """Get specific few-shot v2 fixed epoch task."""
+    tasks_dir, _ = get_fewshot_v2_fixed_dirs(epoch)
+    task_file = tasks_dir / f"{task_id}.json"
+    if not task_file.exists():
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    with open(task_file) as f:
+        return json.load(f)
+
+
+@app.post("/fewshot_v2_e{epoch}/tasks/{task_id}/complete")
+async def complete_fewshot_v2_fixed_task(
+    epoch: int, task_id: str, worker_id: str = Query(...), summary: dict = None
+):
+    """Mark few-shot v2 fixed epoch task as completed."""
+    tasks_dir, results_dir = get_fewshot_v2_fixed_dirs(epoch)
+    task_file = tasks_dir / f"{task_id}.json"
+    if not task_file.exists():
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    with open(task_file) as f:
+        task = json.load(f)
+
+    task["status"] = "completed"
+    task["completed_at"] = datetime.now().isoformat()
+
+    with open(task_file, 'w') as f:
+        json.dump(task, f, indent=2, default=str)
+
+    # Save summary
+    if summary:
+        summary_dir = results_dir / task_id
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        with open(summary_dir / "summary.json", 'w') as f:
+            json.dump(summary, f, indent=2)
+
+    logger.info(f"[e{epoch}] Task {task_id} completed by {worker_id}")
+    return {"message": f"Task {task_id} completed"}
+
+
+@app.post("/fewshot_v2_e{epoch}/tasks/{task_id}/fail")
+async def fail_fewshot_v2_fixed_task(
+    epoch: int, task_id: str, worker_id: str = Query(...), error: str = Query(...)
+):
+    """Mark few-shot v2 fixed epoch task as failed."""
+    tasks_dir, _ = get_fewshot_v2_fixed_dirs(epoch)
+    task_file = tasks_dir / f"{task_id}.json"
+    if not task_file.exists():
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    with open(task_file) as f:
+        task = json.load(f)
+
+    task["status"] = "failed"
+    task["error_message"] = error
+
+    with open(task_file, 'w') as f:
+        json.dump(task, f, indent=2, default=str)
+
+    logger.warning(f"[e{epoch}] Task {task_id} failed: {error}")
+    return {"message": f"Task {task_id} marked as failed"}
+
+
+@app.post("/fewshot_v2_e{epoch}/tasks/{task_id}/reset")
+async def reset_fewshot_v2_fixed_task(epoch: int, task_id: str):
+    """Reset few-shot v2 fixed epoch task to pending."""
+    tasks_dir, _ = get_fewshot_v2_fixed_dirs(epoch)
+    task_file = tasks_dir / f"{task_id}.json"
+    if not task_file.exists():
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    with open(task_file) as f:
+        task = json.load(f)
+
+    task["status"] = "pending"
+    task["worker_id"] = None
+    task["started_at"] = None
+    task["completed_at"] = None
+    task["error_message"] = None
+
+    with open(task_file, 'w') as f:
+        json.dump(task, f, indent=2, default=str)
+
+    logger.info(f"[e{epoch}] Task {task_id} reset to pending")
+    return {"message": f"Task {task_id} reset"}
+
+
+@app.get("/fewshot_v2_e{epoch}/summary")
+async def get_fewshot_v2_fixed_summary(epoch: int):
+    """Get summary of few-shot v2 fixed epoch results."""
+    import numpy as np
+
+    _, results_dir = get_fewshot_v2_fixed_dirs(epoch)
+
+    results = []
+    for task_dir in results_dir.iterdir():
+        if not task_dir.is_dir():
+            continue
+        summary_file = task_dir / "summary.json"
+        if summary_file.exists():
+            with open(summary_file) as f:
+                results.append(json.load(f))
+
+    if not results:
+        return {"epoch": epoch, "message": "No results yet", "summary": {}}
+
+    # Group by k and model
+    summary = {"by_k_model": {}}
+
+    k_values = sorted(set(r.get("k", 0) for r in results))
+    models = ["llama8b", "llama3b", "mistral"]
+
+    for k in k_values:
+        summary["by_k_model"][k] = {}
+        k_results = [r for r in results if r.get("k") == k]
+
+        for model in models:
+            model_results = [r for r in k_results if r.get("model_short_name") == model]
+            if model_results:
+                e0_qwks = [r["epoch_0"]["qwk"] for r in model_results if "epoch_0" in r]
+                best_qwks = [r["best_epoch_metrics"]["qwk"] for r in model_results if "best_epoch_metrics" in r]
+
+                if e0_qwks and best_qwks:
+                    delta_qwks = [b - e for b, e in zip(best_qwks, e0_qwks)]
+                    summary["by_k_model"][k][model] = {
+                        "e0_qwk": float(np.mean(e0_qwks)),
+                        "e0_qwk_std": float(np.std(e0_qwks)),
+                        "fixed_epoch_qwk": float(np.mean(best_qwks)),
+                        "fixed_epoch_qwk_std": float(np.std(best_qwks)),
+                        "delta_qwk": float(np.mean(delta_qwks)),
+                        "delta_qwk_std": float(np.std(delta_qwks)),
+                        "n_tasks": len(model_results),
+                    }
+
+    return {"epoch": epoch, "n_results": len(results), "summary": summary}
+
+
 def run_server():
     """Run the server."""
     import uvicorn

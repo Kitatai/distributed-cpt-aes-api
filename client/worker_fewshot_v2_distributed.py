@@ -106,6 +106,7 @@ def run_fewshot_v2_experiment(
     dev_ids = task_config["dev_ids"]
     example_ids = task_config["example_ids"]
     max_epochs = task_config.get("max_epochs", 30)
+    fixed_epoch = task_config.get("fixed_epoch", None)  # None means use epoch selection
 
     y_min, y_max = ASAP_SCORE_RANGES[prompt_id]
 
@@ -114,6 +115,8 @@ def run_fewshot_v2_experiment(
     logger.info(f"Prompt: {prompt_id}, Model: {model_name}")
     logger.info(f"K: {k}, Pattern: {pattern_idx}")
     logger.info(f"Test: {len(test_ids)}, Dev: {len(dev_ids)}, Examples: {len(example_ids)}")
+    if fixed_epoch is not None:
+        logger.info(f"Fixed epoch mode: e={fixed_epoch} (no epoch selection)")
     logger.info(f"=" * 60)
 
     # Load ASAP data
@@ -322,15 +325,19 @@ def run_fewshot_v2_experiment(
         raise RuntimeError("No epochs could be evaluated")
 
     # ========================================
-    # Phase 2: Select best epoch
+    # Phase 2: Select best epoch (or use fixed epoch)
     # ========================================
     logger.info("=" * 60)
-    logger.info("Phase 2: Selecting best epoch")
+    if fixed_epoch is not None:
+        logger.info(f"Phase 2: Using fixed epoch {fixed_epoch}")
+        best_epoch = fixed_epoch
+        best_mse = epoch_mse_results.get(fixed_epoch, 0.0)
+    else:
+        logger.info("Phase 2: Selecting best epoch")
+        # Find best epoch (lowest MSE, earliest if tie)
+        best_epoch = min(epoch_mse_results.keys(), key=lambda e: (epoch_mse_results[e], e))
+        best_mse = epoch_mse_results[best_epoch]
     logger.info("=" * 60)
-
-    # Find best epoch (lowest MSE, earliest if tie)
-    best_epoch = min(epoch_mse_results.keys(), key=lambda e: (epoch_mse_results[e], e))
-    best_mse = epoch_mse_results[best_epoch]
 
     logger.info(f"Best epoch: {best_epoch} (MSE = {best_mse:.4f})")
 
@@ -413,6 +420,7 @@ def run_fewshot_v2_experiment(
         'n_dev': len(dev_ids),
         'n_examples': len(example_ids),
         'example_ids': example_ids,
+        'fixed_epoch': fixed_epoch,  # None if epoch selection was used
         'epoch_mse': {str(e): epoch_mse_results[e] for e in sorted(epoch_mse_results.keys())},
         'selected_epoch': best_epoch,
         'selected_epoch_mse': best_mse,
@@ -474,6 +482,12 @@ def main():
         action="store_true",
         help="Run only one task and exit",
     )
+    parser.add_argument(
+        "--fixed-epoch",
+        type=int,
+        default=None,
+        help="Fixed epoch mode (e.g., --fixed-epoch 20)",
+    )
 
     args = parser.parse_args()
 
@@ -508,7 +522,11 @@ def main():
             sys.exit(1)
 
     # Get initial status
-    status = client.get_fewshot_v2_status()
+    if args.fixed_epoch is not None:
+        status = client.get_fewshot_v2_fixed_status(args.fixed_epoch)
+        logger.info(f"Fixed epoch mode: e={args.fixed_epoch}")
+    else:
+        status = client.get_fewshot_v2_status()
     if status:
         logger.info(f"Few-shot v2 status: {status.get('pending', 0)} pending, "
                    f"{status.get('running', 0)} running, "
@@ -521,11 +539,19 @@ def main():
 
     while not _state.shutdown_requested:
         # Get next task
-        task = client.get_next_fewshot_v2_task(
-            k=args.k,
-            model=args.model,
-            prompt=args.prompt,
-        )
+        if args.fixed_epoch is not None:
+            task = client.get_next_fewshot_v2_fixed_task(
+                epoch=args.fixed_epoch,
+                k=args.k,
+                model=args.model,
+                prompt=args.prompt,
+            )
+        else:
+            task = client.get_next_fewshot_v2_task(
+                k=args.k,
+                model=args.model,
+                prompt=args.prompt,
+            )
 
         if task is None:
             if consecutive_failures > 0:
@@ -552,7 +578,12 @@ def main():
             )
 
             # Report completion
-            if client.complete_fewshot_v2_task(task_id, summary):
+            if args.fixed_epoch is not None:
+                success = client.complete_fewshot_v2_fixed_task(args.fixed_epoch, task_id, summary)
+            else:
+                success = client.complete_fewshot_v2_task(task_id, summary)
+
+            if success:
                 logger.info(f"Task {task_id} completed and reported to server")
                 tasks_completed += 1
                 consecutive_failures = 0
@@ -561,7 +592,10 @@ def main():
 
         except Exception as e:
             logger.exception(f"Task {task_id} failed: {e}")
-            client.fail_fewshot_v2_task(task_id, str(e))
+            if args.fixed_epoch is not None:
+                client.fail_fewshot_v2_fixed_task(args.fixed_epoch, task_id, str(e))
+            else:
+                client.fail_fewshot_v2_task(task_id, str(e))
             consecutive_failures += 1
 
             if consecutive_failures >= max_failures:
