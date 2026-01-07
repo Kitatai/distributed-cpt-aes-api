@@ -1156,9 +1156,12 @@ async def get_fewshot_v2_summary():
             if model_results:
                 e0_qwks = [r["epoch_0"]["qwk"] for r in model_results if "epoch_0" in r]
                 best_qwks = [r["best_epoch_metrics"]["qwk"] for r in model_results if "best_epoch_metrics" in r]
+                e0_spearmans = [r["epoch_0"]["spearman"] for r in model_results if "epoch_0" in r]
+                best_spearmans = [r["best_epoch_metrics"]["spearman"] for r in model_results if "best_epoch_metrics" in r]
 
                 if e0_qwks and best_qwks:
                     delta_qwks = [b - e for b, e in zip(best_qwks, e0_qwks)]
+                    delta_spearmans = [b - e for b, e in zip(best_spearmans, e0_spearmans)]
                     summary["by_k_model"][k][model] = {
                         "e0_qwk": float(np.mean(e0_qwks)),
                         "e0_qwk_std": float(np.std(e0_qwks)),
@@ -1166,6 +1169,12 @@ async def get_fewshot_v2_summary():
                         "best_qwk_std": float(np.std(best_qwks)),
                         "delta_qwk": float(np.mean(delta_qwks)),
                         "delta_qwk_std": float(np.std(delta_qwks)),
+                        "e0_spearman": float(np.mean(e0_spearmans)),
+                        "e0_spearman_std": float(np.std(e0_spearmans)),
+                        "best_spearman": float(np.mean(best_spearmans)),
+                        "best_spearman_std": float(np.std(best_spearmans)),
+                        "delta_spearman": float(np.mean(delta_spearmans)),
+                        "delta_spearman_std": float(np.std(delta_spearmans)),
                         "n_tasks": len(model_results),
                     }
 
@@ -1377,9 +1386,12 @@ async def get_fewshot_v2_fixed_summary(epoch: int):
             if model_results:
                 e0_qwks = [r["epoch_0"]["qwk"] for r in model_results if "epoch_0" in r]
                 best_qwks = [r["best_epoch_metrics"]["qwk"] for r in model_results if "best_epoch_metrics" in r]
+                e0_spearmans = [r["epoch_0"]["spearman"] for r in model_results if "epoch_0" in r]
+                best_spearmans = [r["best_epoch_metrics"]["spearman"] for r in model_results if "best_epoch_metrics" in r]
 
                 if e0_qwks and best_qwks:
                     delta_qwks = [b - e for b, e in zip(best_qwks, e0_qwks)]
+                    delta_spearmans = [b - e for b, e in zip(best_spearmans, e0_spearmans)]
                     summary["by_k_model"][k][model] = {
                         "e0_qwk": float(np.mean(e0_qwks)),
                         "e0_qwk_std": float(np.std(e0_qwks)),
@@ -1387,6 +1399,12 @@ async def get_fewshot_v2_fixed_summary(epoch: int):
                         "fixed_epoch_qwk_std": float(np.std(best_qwks)),
                         "delta_qwk": float(np.mean(delta_qwks)),
                         "delta_qwk_std": float(np.std(delta_qwks)),
+                        "e0_spearman": float(np.mean(e0_spearmans)),
+                        "e0_spearman_std": float(np.std(e0_spearmans)),
+                        "fixed_epoch_spearman": float(np.mean(best_spearmans)),
+                        "fixed_epoch_spearman_std": float(np.std(best_spearmans)),
+                        "delta_spearman": float(np.mean(delta_spearmans)),
+                        "delta_spearman_std": float(np.std(delta_spearmans)),
                         "n_tasks": len(model_results),
                     }
 

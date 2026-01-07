@@ -68,15 +68,14 @@ if not by_k_model:
 k_values = sorted(by_k_model.keys(), key=int)
 models = ['llama8b', 'llama3b', 'mistral']
 
-# Header
-print('Results by k-shot and model (QWK mean±std):')
+# QWK Table
+print('=== QWK (mean±std) ===')
 print(f\"{'Model':<10}\", end='')
 for k in k_values:
     print(f'   {k}-shot E0        {k}-shot Fixed  ', end='')
 print()
 print('-' * (10 + 40 * len(k_values)))
 
-# Data rows
 for model in models:
     print(f'{model:<10}', end='')
     for k in k_values:
@@ -91,11 +90,46 @@ for model in models:
             print(f'       -             -        ', end='')
     print()
 
-# Delta row
 print('-' * (10 + 40 * len(k_values)))
 print(f\"{'Δ (avg)':<10}\", end='')
 for k in k_values:
     deltas = [(by_k_model[k][m]['delta_qwk'], by_k_model[k][m].get('delta_qwk_std', 0))
+              for m in models if m in by_k_model.get(k, {})]
+    if deltas:
+        avg_delta = sum(d[0] for d in deltas) / len(deltas)
+        avg_std = sum(d[1] for d in deltas) / len(deltas)
+        print(f'           {avg_delta:+.3f}±{avg_std:.3f}       ', end='')
+    else:
+        print(f'                  -              ', end='')
+print()
+
+# Spearman Table
+print()
+print('=== Spearman (mean±std) ===')
+print(f\"{'Model':<10}\", end='')
+for k in k_values:
+    print(f'   {k}-shot E0        {k}-shot Fixed  ', end='')
+print()
+print('-' * (10 + 40 * len(k_values)))
+
+for model in models:
+    print(f'{model:<10}', end='')
+    for k in k_values:
+        if model in by_k_model.get(k, {}):
+            m = by_k_model[k][model]
+            e0 = m.get('e0_spearman', 0)
+            e0_std = m.get('e0_spearman_std', 0)
+            fixed = m.get('fixed_epoch_spearman', 0)
+            fixed_std = m.get('fixed_epoch_spearman_std', 0)
+            print(f'  {e0:.3f}±{e0_std:.3f}       {fixed:.3f}±{fixed_std:.3f}  ', end='')
+        else:
+            print(f'       -             -        ', end='')
+    print()
+
+print('-' * (10 + 40 * len(k_values)))
+print(f\"{'Δ (avg)':<10}\", end='')
+for k in k_values:
+    deltas = [(by_k_model[k][m].get('delta_spearman', 0), by_k_model[k][m].get('delta_spearman_std', 0))
               for m in models if m in by_k_model.get(k, {})]
     if deltas:
         avg_delta = sum(d[0] for d in deltas) / len(deltas)
