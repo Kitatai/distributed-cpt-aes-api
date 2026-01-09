@@ -179,6 +179,7 @@ def extract_token_probabilities(
 
     Returns:
         Tuple of (P(A), P(B)) where P(A) = P("A") + P(" A"), P(B) = P("B") + P(" B")
+        Token IDs are deduplicated to avoid double-counting.
     """
     import torch
     import torch.nn.functional as F
@@ -192,29 +193,33 @@ def extract_token_probabilities(
         logits = outputs.logits[:, -1, :]  # Shape: (1, vocab_size)
         probs = F.softmax(logits, dim=-1).squeeze(0)  # Shape: (vocab_size,)
 
-    # Get token IDs for "A", " A", "B", " B"
-    tokens_a = ["A", " A"]
-    tokens_b = ["B", " B"]
+    # Get unique token IDs for "A", " A", "B", " B"
+    # Deduplicate by token ID to avoid counting the same token multiple times
+    def get_unique_token_ids(token_strings: list) -> set:
+        token_ids = set()
+        for token_str in token_strings:
+            try:
+                ids = tokenizer.encode(token_str, add_special_tokens=False)
+                if len(ids) == 1:
+                    token_ids.add(ids[0])
+            except:
+                pass
+        return token_ids
 
-    def get_token_prob(token_str: str) -> float:
-        try:
-            token_ids = tokenizer.encode(token_str, add_special_tokens=False)
-            if len(token_ids) == 1:
-                return probs[token_ids[0]].item()
-            return 0.0
-        except:
-            return 0.0
+    token_ids_a = get_unique_token_ids(["A", " A"])
+    token_ids_b = get_unique_token_ids(["B", " B"])
 
-    p_a = sum(get_token_prob(t) for t in tokens_a)
-    p_b = sum(get_token_prob(t) for t in tokens_b)
+    p_a = sum(probs[tid].item() for tid in token_ids_a)
+    p_b = sum(probs[tid].item() for tid in token_ids_b)
 
     # Debug: show top tokens
     if debug:
         top_k = 10
         top_probs, top_indices = torch.topk(probs, top_k)
-        top_tokens = [tokenizer.decode([idx]) for idx in top_indices.tolist()]
-        logger.info(f"Top {top_k} tokens: {list(zip(top_tokens, top_probs.tolist()))}")
-        logger.info(f"P(a)={p_a:.4f}, P(b)={p_b:.4f}, sum={p_a+p_b:.4f}")
+        top_tokens = [(tokenizer.decode([idx]), idx) for idx in top_indices.tolist()]
+        logger.info(f"Top {top_k} tokens: {[(t, tid, p) for (t, tid), p in zip(top_tokens, top_probs.tolist())]}")
+        logger.info(f"Token IDs - A: {token_ids_a}, B: {token_ids_b}")
+        logger.info(f"P(A)={p_a:.4f}, P(B)={p_b:.4f}, sum={p_a+p_b:.4f}")
 
     return p_a, p_b
 
