@@ -1434,6 +1434,231 @@ async def get_e0_results(results_dir: str, task_id: str):
     }
 
 
+# ============================================
+# Pairwise Comparison Experiment
+# ============================================
+
+TASKS_PAIRWISE_DIR = DATA_DIR / "tasks_pairwise"
+RESULTS_PAIRWISE_DIR = DATA_DIR / "results_pairwise"
+TASKS_PAIRWISE_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_PAIRWISE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def load_pairwise_task(task_id: str) -> Optional[dict]:
+    """Load a pairwise task from disk."""
+    task_file = TASKS_PAIRWISE_DIR / f"{task_id}.json"
+    if task_file.exists():
+        with open(task_file) as f:
+            return json.load(f)
+    return None
+
+
+def save_pairwise_task(task: dict):
+    """Save a pairwise task to disk."""
+    task_file = TASKS_PAIRWISE_DIR / f"{task['task_id']}.json"
+    with open(task_file, 'w') as f:
+        json.dump(task, f, indent=2)
+
+
+def get_all_pairwise_tasks() -> list:
+    """Get all pairwise tasks."""
+    tasks = []
+    for task_file in TASKS_PAIRWISE_DIR.glob("*.json"):
+        with open(task_file) as f:
+            tasks.append(json.load(f))
+    return sorted(tasks, key=lambda t: t["task_id"])
+
+
+@app.post("/pairwise/tasks")
+async def register_pairwise_task(task: dict):
+    """Register a new pairwise comparison task."""
+    task_id = task.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id is required")
+
+    task["status"] = "pending"
+    task["created_at"] = datetime.now().isoformat()
+    save_pairwise_task(task)
+
+    logger.info(f"Registered pairwise task: {task_id}")
+    return {"message": f"Task {task_id} registered", "task_id": task_id}
+
+
+@app.get("/pairwise/tasks")
+async def get_pairwise_status():
+    """Get status of all pairwise tasks."""
+    tasks = get_all_pairwise_tasks()
+
+    status_counts = {"pending": 0, "running": 0, "completed": 0, "failed": 0}
+    for task in tasks:
+        status = task.get("status", "pending")
+        if status in status_counts:
+            status_counts[status] += 1
+
+    return {
+        "total_tasks": len(tasks),
+        **status_counts,
+        "tasks": tasks,
+    }
+
+
+@app.get("/pairwise/tasks/next")
+async def get_next_pairwise_task(
+    worker_id: str = Query(..., description="Worker identifier"),
+    model: Optional[str] = Query(None, description="Filter by model"),
+    prompt: Optional[int] = Query(None, description="Filter by prompt ID"),
+):
+    """Get next available pairwise task."""
+    lock = FileLock(str(TASKS_PAIRWISE_DIR / ".assign.lock"))
+
+    with lock:
+        tasks = get_all_pairwise_tasks()
+
+        for task in tasks:
+            if task.get("status") != "pending":
+                continue
+
+            if model is not None and task.get("model_short_name") != model:
+                continue
+            if prompt is not None and task.get("prompt_id") != prompt:
+                continue
+
+            task["status"] = "running"
+            task["worker_id"] = worker_id
+            task["started_at"] = datetime.now().isoformat()
+            save_pairwise_task(task)
+
+            logger.info(f"Assigned pairwise task {task['task_id']} to worker {worker_id}")
+            return {"success": True, "task": task}
+
+        return {"success": False, "message": "No pending tasks available"}
+
+
+@app.get("/pairwise/tasks/{task_id}")
+async def get_pairwise_task(task_id: str):
+    """Get a specific pairwise task."""
+    task = load_pairwise_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return task
+
+
+@app.post("/pairwise/tasks/{task_id}/complete")
+async def complete_pairwise_task(task_id: str, worker_id: str = Query(...), result: dict = None):
+    """Mark a pairwise task as completed."""
+    task = load_pairwise_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    if task.get("worker_id") != worker_id:
+        raise HTTPException(status_code=403, detail="Worker ID mismatch")
+
+    task["status"] = "completed"
+    task["completed_at"] = datetime.now().isoformat()
+    save_pairwise_task(task)
+
+    # Save result if provided
+    if result:
+        results_dir = RESULTS_PAIRWISE_DIR / task_id
+        results_dir.mkdir(parents=True, exist_ok=True)
+        with open(results_dir / "result.json", 'w') as f:
+            json.dump(result, f, indent=2)
+
+    logger.info(f"Pairwise task {task_id} completed by {worker_id}")
+    return {"message": f"Task {task_id} completed"}
+
+
+@app.post("/pairwise/tasks/{task_id}/fail")
+async def fail_pairwise_task(task_id: str, worker_id: str = Query(...), error: str = Query(...)):
+    """Mark a pairwise task as failed."""
+    task = load_pairwise_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    task["status"] = "failed"
+    task["error_message"] = error
+    save_pairwise_task(task)
+
+    logger.warning(f"Pairwise task {task_id} failed: {error}")
+    return {"message": f"Task {task_id} marked as failed"}
+
+
+@app.post("/pairwise/tasks/{task_id}/reset")
+async def reset_pairwise_task(task_id: str):
+    """Reset a pairwise task to pending."""
+    task = load_pairwise_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    task["status"] = "pending"
+    task["worker_id"] = None
+    task["started_at"] = None
+    task["completed_at"] = None
+    task["error_message"] = None
+    save_pairwise_task(task)
+
+    logger.info(f"Pairwise task {task_id} reset")
+    return {"message": f"Task {task_id} reset"}
+
+
+@app.get("/pairwise/summary")
+async def get_pairwise_summary():
+    """Get summary of completed pairwise results with Spearman by epoch."""
+    import numpy as np
+
+    results = []
+    for task_dir in RESULTS_PAIRWISE_DIR.iterdir():
+        if not task_dir.is_dir():
+            continue
+        result_file = task_dir / "result.json"
+        if result_file.exists():
+            with open(result_file) as f:
+                results.append(json.load(f))
+
+    if not results:
+        return {"n_results": 0, "summary": {}}
+
+    # Group by prompt and model, aggregate Spearman by epoch
+    summary = {"by_prompt_model": {}}
+
+    for result in results:
+        prompt_id = result.get("prompt_id")
+        model_short = result.get("model_short")
+        results_by_epoch = result.get("results_by_epoch", {})
+
+        key = f"prompt{prompt_id}_{model_short}"
+        if key not in summary["by_prompt_model"]:
+            summary["by_prompt_model"][key] = {
+                "prompt_id": prompt_id,
+                "model_short": model_short,
+                "epoch_spearman": {},
+                "n_patterns": 0,
+            }
+
+        summary["by_prompt_model"][key]["n_patterns"] += 1
+
+        for epoch_str, epoch_result in results_by_epoch.items():
+            epoch = int(epoch_str)
+            spearman = epoch_result.get("spearman", 0)
+
+            if epoch not in summary["by_prompt_model"][key]["epoch_spearman"]:
+                summary["by_prompt_model"][key]["epoch_spearman"][epoch] = []
+            summary["by_prompt_model"][key]["epoch_spearman"][epoch].append(spearman)
+
+    # Calculate mean and std for each epoch
+    for key, data in summary["by_prompt_model"].items():
+        epoch_stats = {}
+        for epoch, values in data["epoch_spearman"].items():
+            epoch_stats[epoch] = {
+                "mean": float(np.mean(values)),
+                "std": float(np.std(values)),
+                "n": len(values),
+            }
+        data["epoch_spearman"] = epoch_stats
+
+    return {"n_results": len(results), "summary": summary}
+
+
 def run_server():
     """Run the server."""
     import uvicorn

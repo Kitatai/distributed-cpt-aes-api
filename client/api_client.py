@@ -663,3 +663,92 @@ class APIClient:
         except requests.RequestException as e:
             logger.error(f"Failed to get E0 results: {e}")
             return None
+
+    # ============================================
+    # Pairwise Comparison Task Management
+    # ============================================
+
+    def get_task(self, exp_name: str, worker_id: str) -> Optional[Dict[str, Any]]:
+        """Get next available task for a generic experiment.
+
+        Args:
+            exp_name: Experiment name (e.g., "pairwise")
+            worker_id: Worker identifier
+        """
+        try:
+            resp = requests.get(
+                self._url(f"/{exp_name}/tasks/next"),
+                params={"worker_id": worker_id},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("success"):
+                return data.get("task")
+            return None
+
+        except requests.RequestException as e:
+            logger.error(f"Failed to get task: {e}")
+            return None
+
+    def upload_result(self, exp_name: str, task_id: str, result: Dict[str, Any]) -> bool:
+        """Upload result for a generic experiment task.
+
+        Args:
+            exp_name: Experiment name (e.g., "pairwise")
+            task_id: Task identifier
+            result: Result data to upload
+        """
+        try:
+            resp = requests.post(
+                self._url(f"/{exp_name}/tasks/{task_id}/complete"),
+                params={"worker_id": self.worker_id},
+                json=result,
+                timeout=60,
+            )
+            resp.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            logger.error(f"Failed to upload result: {e}")
+            return False
+
+    def fail_task(self, exp_name: str, task_id: str, error_message: str) -> bool:
+        """Mark a generic experiment task as failed.
+
+        Args:
+            exp_name: Experiment name (e.g., "pairwise")
+            task_id: Task identifier
+            error_message: Error description
+        """
+        try:
+            resp = requests.post(
+                self._url(f"/{exp_name}/tasks/{task_id}/fail"),
+                params={"worker_id": self.worker_id, "error": error_message},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            logger.error(f"Failed to mark task as failed: {e}")
+            return False
+
+    def get_pairwise_status(self) -> Optional[Dict[str, Any]]:
+        """Get status of all pairwise tasks."""
+        try:
+            resp = requests.get(self._url("/pairwise/tasks"), timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            logger.error(f"Failed to get pairwise status: {e}")
+            return None
+
+    def get_pairwise_summary(self) -> Optional[Dict[str, Any]]:
+        """Get summary of completed pairwise results."""
+        try:
+            resp = requests.get(self._url("/pairwise/summary"), timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            logger.error(f"Failed to get pairwise summary: {e}")
+            return None
